@@ -1,7 +1,7 @@
-using System.Text;
 using Efrsb.Infrastructure;
 using Efrsb.Infrastructure.Data;
 using Efrsb.Infrastructure.Jobs;
+using Efrsb.Web;
 using Hangfire;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Components;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -79,8 +80,8 @@ app.MapRazorComponents<Efrsb.Web.Components.App>().AddInteractiveServerRenderMod
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.EnsureCreatedAsync();
-   // await SeedRoles.SeedAsync(scope.ServiceProvider);
+    await db.Database.MigrateAsync();
+    await SeedRoles.SeedAsync(scope.ServiceProvider);
 }
 
 RecurringJob.AddOrUpdate<FedresursSyncJob>("fedresurs-sync-all", job => job.SyncAllAsync(CancellationToken.None), "*/10 * * * *");

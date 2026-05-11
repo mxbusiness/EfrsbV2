@@ -1,36 +1,103 @@
 @page "/companies"
 @attribute [Authorize]
-@inject HttpClient Http
-@inject AuthenticationStateProvider AuthState
+
+@using System.Security.Claims
+@using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject ICompanyTrackingService CompanyService
+@inject AuthenticationStateProvider AuthState
 
 <h1>Отслеживаемые компании</h1>
+
 <div class="card">
     <input @bind="query" placeholder="ИНН / ОГРН / название / GUID" />
     <button @onclick="Add">Добавить</button>
 </div>
-@if (companies is null) { <p>Загрузка...</p> } else {
-<table>
-    <thead><tr><th>Компания</th><th>ИНН/ОГРН</th><th>Непрочитанные</th><th>Синхронизация</th><th></th></tr></thead>
-    <tbody>
-    @foreach (var c in companies)
-    {
-        <tr>
-            <td><a href="/companies/@c.Id/messages">@(c.Name ?? c.SearchQuery)</a><br/><span class="muted">@c.BankruptGuid</span></td>
-            <td>@c.Inn / @c.Ogrn</td>
-            <td>@if(c.UnreadCount > 0){<span class="badge">@c.UnreadCount</span>}else{<span>0</span>}</td>
-            <td>@c.LastSyncedAtUtc</td>
-            <td><button @onclick="() => Sync(c.Id)">Обновить</button></td>
-        </tr>
-    }
-    </tbody>
-</table>
+
+@if (companies is null)
+{
+    <p>Загрузка...</p>
 }
+else if (companies.Count == 0)
+{
+    <p>Компаний пока нет.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th>Компания</th>
+                <th>ИНН / ОГРН</th>
+                <th>BankruptGuid</th>
+                <th>Непрочитанные</th>
+                <th>Синхронизация</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var c in companies)
+            {
+                <tr>
+                    <td>@(c.Name ?? c.SearchQuery)</td>
+                    <td>@c.Inn / @c.Ogrn</td>
+                    <td>@c.BankruptGuid</td>
+                    <td>@c.UnreadCount</td>
+                    <td>@c.LastSyncedAtUtc</td>
+                    <td>
+                        <button @onclick="() => Sync(c.Id)">Обновить</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
 @code {
-    private List<TrackedCompanyDto>? companies;
+    private IReadOnlyList<TrackedCompanyDto>? companies;
     private string query = string.Empty;
-    protected override async Task OnInitializedAsync() => await Load();
-    private async Task Load() => companies = await Http.GetFromJsonAsync<List<TrackedCompanyDto>>("/api/companies");
-    private async Task Add(){ if(string.IsNullOrWhiteSpace(query)) return; await Http.PostAsJsonAsync("/api/companies", new CreateTrackedCompanyRequest(query)); query=""; await Load(); }
-    private async Task Sync(Guid id){ await Http.PostAsync($"/api/companies/{id}/sync", null); await Load(); }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task<Guid> GetUserId()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Пользователь не авторизован.");
+
+        return Guid.Parse(value);
+    }
+
+    private async Task Load()
+    {
+        var userId = await GetUserId();
+        companies = await CompanyService.GetCompaniesAsync(userId, CancellationToken.None);
+    }
+
+    private async Task Add()
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return;
+
+        var userId = await GetUserId();
+        await CompanyService.AddCompanyAsync(userId, query, CancellationToken.None);
+
+        query = string.Empty;
+        await Load();
+    }
+
+    private async Task Sync(Guid id)
+    {
+        var userId = await GetUserId();
+        await CompanyService.SyncCompanyAsync(userId, id, CancellationToken.None);
+
+        await Load();
+    }
 }
