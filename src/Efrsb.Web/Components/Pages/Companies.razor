@@ -16,6 +16,16 @@
     <button @onclick="Add">Добавить</button>
 </div>
 
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <p style="color: red">@error</p>
+}
+
+@if (!string.IsNullOrWhiteSpace(status))
+{
+    <p>@status</p>
+}
+
 @if (companies is null)
 {
     <p>Загрузка...</p>
@@ -58,6 +68,8 @@ else
 @code {
     private IReadOnlyList<TrackedCompanyDto>? companies;
     private string query = string.Empty;
+    private string? error;
+    private string? status;
 
     protected override async Task OnInitializedAsync()
     {
@@ -83,21 +95,45 @@ else
 
     private async Task Add()
     {
-        if (string.IsNullOrWhiteSpace(query))
-            return;
+        error = null;
+        status = "Добавляем компанию...";
 
-        var userId = await GetUserId();
-        await CompanyService.AddCompanyAsync(userId, query, CancellationToken.None);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return;
 
-        query = string.Empty;
-        await Load();
+            var userId = await GetUserId();
+            await CompanyService.AddCompanyAsync(userId, query, CancellationToken.None);
+
+            query = string.Empty;
+            status = "Компания добавлена.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
     }
 
     private async Task Sync(Guid id)
     {
-        var userId = await GetUserId();
-        await CompanyService.SyncCompanyAsync(userId, id, CancellationToken.None);
+        error = null;
+        status = "Синхронизация...";
 
-        await Load();
+        try
+        {
+            var userId = await GetUserId();
+            await CompanyService.SyncCompanyAsync(userId, id, CancellationToken.None);
+
+            status = "Синхронизация завершена.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
     }
 }
