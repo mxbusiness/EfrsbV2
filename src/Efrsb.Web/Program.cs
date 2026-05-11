@@ -1,3 +1,4 @@
+// program.cs
 using Efrsb.Infrastructure;
 using Efrsb.Infrastructure.Data;
 using Efrsb.Infrastructure.Jobs;
@@ -12,7 +13,6 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
-
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddControllers();
 builder.Services.AddCascadingAuthenticationState();
