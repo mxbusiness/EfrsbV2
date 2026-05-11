@@ -1,0 +1,16 @@
+@page "/companies/{CompanyId:guid}/messages"
+@attribute [Authorize]
+@inject HttpClient Http
+@using Efrsb.Contracts.Messages
+<h1>Сообщения</h1>
+@if(messages is null){<p>Загрузка...</p>} else {
+<table>
+<thead><tr><th>Дата</th><th>Номер</th><th>Тип</th><th>Статус</th></tr></thead>
+<tbody>
+@foreach(var m in messages){<tr class="@(m.IsRead ? "" : "unread")"><td>@m.DatePublish</td><td><a href="/messages/@m.Id">@m.Number</a></td><td>@m.Type</td><td>@(m.IsRead ? "прочитано" : "новое")</td></tr>}
+</tbody></table>}
+@code{
+[Parameter] public Guid CompanyId {get;set;}
+private List<EfrsbMessageDto>? messages;
+protected override async Task OnInitializedAsync(){ messages = await Http.GetFromJsonAsync<List<EfrsbMessageDto>>($"/api/companies/{CompanyId}/messages"); }
+}

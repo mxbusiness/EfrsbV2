@@ -1,0 +1,9 @@
+@page "/register"
+<h1>Регистрация</h1>
+<div class="card">
+    <form method="post" action="/api/auth/register-cookie">
+        <input name="email" placeholder="Email" />
+        <input name="password" placeholder="Пароль" type="password" />
+        <button type="submit">Зарегистрироваться</button>
+    </form>
+</div>

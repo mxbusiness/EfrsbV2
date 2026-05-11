@@ -1,0 +1,14 @@
+@inherits LayoutComponentBase
+<div class="shell">
+    <aside>
+        <h2>ЕФРСБ V2</h2>
+        <NavLink href="/" Match="NavLinkMatch.All">Дашборд</NavLink>
+        <NavLink href="/companies">Компании</NavLink>
+        <NavLink href="/messages">Сообщения</NavLink>
+        <AuthorizeView>
+            <Authorized><a href="/api/auth/logout">Выход</a></Authorized>
+            <NotAuthorized><a href="/login">Вход</a></NotAuthorized>
+        </AuthorizeView>
+    </aside>
+    <main>@Body</main>
+</div>

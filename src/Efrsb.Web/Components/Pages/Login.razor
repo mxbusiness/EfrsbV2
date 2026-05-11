@@ -1,0 +1,11 @@
+@page "/login"
+@inject NavigationManager Nav
+<h1>Вход</h1>
+<div class="card">
+    <form method="post" action="/api/auth/login-cookie">
+        <input name="email" placeholder="Email" />
+        <input name="password" placeholder="Пароль" type="password" />
+        <button type="submit">Войти</button>
+    </form>
+    <p><a href="/register">Регистрация</a></p>
+</div>
