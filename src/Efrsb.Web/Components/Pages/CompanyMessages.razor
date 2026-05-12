@@ -1,13 +1,23 @@
 @page "/companies/{CompanyId:guid}/messages"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
 
+@using System.Security.Claims
+@using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Messages
 @using Microsoft.AspNetCore.Authorization
-@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Web
 
-@inject HttpClient Http
+@inject ICompanyTrackingService CompanyService
+@inject AuthenticationStateProvider AuthState
 
 <h1>Сообщения</h1>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <p style="color:red">@error</p>
+}
 
 @if (messages is null)
 {
@@ -19,50 +29,69 @@ else if (messages.Count == 0)
 }
 else
 {
-    <table class="table">
+    <table>
         <thead>
             <tr>
                 <th>Дата</th>
                 <th>Номер</th>
                 <th>Тип</th>
                 <th>Статус</th>
+                <th>Нарушение</th>
+                <th>Заблокировано</th>
+                <th>Аннулировано</th>
             </tr>
         </thead>
-
         <tbody>
             @foreach (var m in messages)
             {
                 <tr class="@(m.IsRead ? "" : "unread")">
                     <td>@m.DatePublish.ToLocalTime()</td>
-
                     <td>
-                        <a href="/messages/@m.Id">
-                            @m.Number
-                        </a>
+                        <a href="/messages/@m.Id">@m.Number</a>
                     </td>
-
                     <td>@m.Type</td>
-
-                    <td>
-                        @(m.IsRead ? "прочитано" : "новое")
-                    </td>
+                    <td>@(m.IsRead ? "прочитано" : "новое")</td>
+                    <td>@(m.HasViolation == true ? "да" : "нет")</td>
+                    <td>@(m.IsLocked ? "да" : "нет")</td>
+                    <td>@(m.IsAnnulled ? "да" : "нет")</td>
                 </tr>
             }
         </tbody>
     </table>
 }
 
-@code {
+<p>
+    <a href="/companies">Назад к компаниям</a>
+</p>
 
+@code {
     [Parameter]
     public Guid CompanyId { get; set; }
 
-    private List<EfrsbMessageDto>? messages;
+    private IReadOnlyList<EfrsbMessageDto>? messages;
+    private string? error;
 
     protected override async Task OnInitializedAsync()
     {
-        messages =
-            await Http.GetFromJsonAsync<List<EfrsbMessageDto>>(
-                $"/api/companies/{CompanyId}/messages");
+        try
+        {
+            var userId = await GetUserId();
+            messages = await CompanyService.GetMessagesAsync(userId, CompanyId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task<Guid> GetUserId()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Пользователь не авторизован.");
+
+        return Guid.Parse(value);
     }
 }
