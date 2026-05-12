@@ -43,20 +43,36 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         string query,
         CancellationToken cancellationToken = default)
     {
+        var normalizedQuery = query.Trim();
+
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+            throw new InvalidOperationException("Введите ИНН, ОГРН, название или GUID компании.");
+
         var bankrupts = await _fedresurs.SearchBankruptsAsync(
-            query,
+            normalizedQuery,
             cancellationToken);
 
         var first = bankrupts.PageData.FirstOrDefault();
 
+        if (first is null || string.IsNullOrWhiteSpace(first.Guid))
+            throw new InvalidOperationException("Компания не найдена в ЕФРСБ.");
+
+        var alreadyExists = await _db.TrackedCompanies
+            .AnyAsync(
+                x => x.UserId == userId && x.BankruptGuid == first.Guid,
+                cancellationToken);
+
+        if (alreadyExists)
+            throw new InvalidOperationException("Эта компания уже добавлена в отслеживание.");
+
         var entity = new TrackedCompany
         {
             UserId = userId,
-            SearchQuery = query.Trim(),
-            BankruptGuid = first?.Guid,
-            Name = first?.Name,
-            Inn = first?.Inn,
-            Ogrn = first?.Ogrn
+            SearchQuery = normalizedQuery,
+            BankruptGuid = first.Guid,
+            Name = first.Name,
+            Inn = first.Inn,
+            Ogrn = first.Ogrn
         };
 
         _db.TrackedCompanies.Add(entity);
