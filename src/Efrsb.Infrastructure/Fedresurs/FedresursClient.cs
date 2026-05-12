@@ -87,7 +87,6 @@ public sealed class FedresursClient : IFedresursClient
             $"datePublishEnd={Uri.EscapeDataString("lte:" + dateTo.ToString("yyyy-MM-ddTHH:mm:ss"))}",
             "includeContent=true",
             "includeBankruptInfo=true",
-            "isLocked=false",
             $"limit={limit}",
             $"offset={offset}",
             "sort=DatePublish:desc"
@@ -129,9 +128,17 @@ public sealed class FedresursClient : IFedresursClient
     {
         await EnsureAuthorizedAsync(cancellationToken);
 
-        return await GetJsonAsync<FedresursMessageItem>(
+        var response = await _httpClient.GetAsync(
             $"v1/messages/{Uri.EscapeDataString(guid)}",
             cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<FedresursMessageItem>(
+            cancellationToken: cancellationToken);
     }
 
     public async Task<byte[]> DownloadMessageFilesArchiveAsync(
