@@ -12,19 +12,42 @@ namespace Efrsb.Web.Controllers;
 public sealed class CompaniesController : ControllerBase
 {
     private readonly ICompanyTrackingService _service;
-    public CompaniesController(ICompanyTrackingService service) => _service = service;
+
+    public CompaniesController(ICompanyTrackingService service)
+    {
+        _service = service;
+    }
 
     [HttpGet]
-    public async Task<IActionResult> Get(CancellationToken ct) => Ok(await _service.GetCompaniesAsync(UserId, ct));
+    public async Task<IActionResult> Get(CancellationToken ct)
+    {
+        return Ok(await _service.GetCompaniesAsync(UserId, ct));
+    }
 
     [HttpPost]
-    public async Task<IActionResult> Create(CreateTrackedCompanyRequest request, CancellationToken ct) => Ok(await _service.AddCompanyAsync(UserId, request.Query, ct));
+    public async Task<IActionResult> Create(CreateTrackedCompanyRequest request, CancellationToken ct)
+    {
+        return Ok(await _service.AddCompanyAsync(UserId, request.Query, ct));
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        await _service.DeleteCompanyAsync(UserId, id, ct);
+        return NoContent();
+    }
 
     [HttpPost("{id:guid}/sync")]
-    public async Task<IActionResult> Sync(Guid id, CancellationToken ct) => Ok(new { loaded = await _service.SyncCompanyAsync(UserId, id, ct) });
+    public async Task<IActionResult> Sync(Guid id, CancellationToken ct)
+    {
+        return Ok(new { loaded = await _service.SyncCompanyAsync(UserId, id, ct) });
+    }
 
     [HttpGet("{id:guid}/messages")]
-    public async Task<IActionResult> Messages(Guid id, CancellationToken ct) => Ok(await _service.GetMessagesAsync(UserId, id, ct));
+    public async Task<IActionResult> Messages(Guid id, CancellationToken ct)
+    {
+        return Ok(await _service.GetMessagesAsync(UserId, id, ct));
+    }
 
     private Guid UserId => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

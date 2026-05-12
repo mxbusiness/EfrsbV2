@@ -11,4 +11,5 @@ public interface ICompanyTrackingService
     Task<IReadOnlyList<EfrsbMessageDto>> GetMessagesAsync(Guid userId, Guid trackedCompanyId, CancellationToken cancellationToken = default);
     Task<EfrsbMessageDetailsDto?> GetMessageDetailsAsync(Guid userId, Guid messageId, CancellationToken cancellationToken = default);
     Task MarkMessageReadAsync(Guid userId, Guid messageId, CancellationToken cancellationToken = default);
+    Task DeleteCompanyAsync(Guid userId, Guid trackedCompanyId, CancellationToken cancellationToken = default);
 }

@@ -176,3 +176,23 @@ pre {
     border: 1px solid #334155;
     max-height: 65vh;
 }
+
+.actions-cell {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+button.danger {
+    background: #dc2626;
+    border-color: #ef4444;
+}
+
+    button.danger:hover {
+        background: #b91c1c;
+    }
+
+.error {
+    color: #fca5a5;
+}

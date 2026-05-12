@@ -30,7 +30,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         _db = db;
         _fedresurs = fedresurs;
-
         _filesRoot = Path.Combine(
             AppContext.BaseDirectory,
             "storage",
@@ -61,10 +60,52 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         };
 
         _db.TrackedCompanies.Add(entity);
-
         await _db.SaveChangesAsync(cancellationToken);
 
         return await ToDtoAsync(entity, userId, cancellationToken);
+    }
+
+    public async Task DeleteCompanyAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        var company = await _db.TrackedCompanies
+            .FirstOrDefaultAsync(
+                x => x.Id == trackedCompanyId && x.UserId == userId,
+                cancellationToken);
+
+        if (company is null)
+            return;
+
+        var messageIds = await _db.EfrsbMessages
+            .Where(x => x.TrackedCompanyId == trackedCompanyId)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        var states = await _db.UserMessageStates
+            .Where(x => messageIds.Contains(x.EfrsbMessageId))
+            .ToListAsync(cancellationToken);
+
+        var files = await _db.EfrsbMessageFiles
+            .Where(x => messageIds.Contains(x.EfrsbMessageId))
+            .ToListAsync(cancellationToken);
+
+        var messages = await _db.EfrsbMessages
+            .Where(x => x.TrackedCompanyId == trackedCompanyId)
+            .ToListAsync(cancellationToken);
+
+        var logs = await _db.FedresursSyncLogs
+            .Where(x => x.TrackedCompanyId == trackedCompanyId)
+            .ToListAsync(cancellationToken);
+
+        _db.UserMessageStates.RemoveRange(states);
+        _db.EfrsbMessageFiles.RemoveRange(files);
+        _db.EfrsbMessages.RemoveRange(messages);
+        _db.FedresursSyncLogs.RemoveRange(logs);
+        _db.TrackedCompanies.Remove(company);
+
+        await _db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<TrackedCompanyDto>> GetCompaniesAsync(
@@ -91,8 +132,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         var company = await _db.TrackedCompanies
             .FirstOrDefaultAsync(
-                x => x.Id == trackedCompanyId &&
-                     x.UserId == userId,
+                x => x.Id == trackedCompanyId && x.UserId == userId,
                 cancellationToken)
             ?? throw new InvalidOperationException("Tracked company not found.");
 
@@ -108,11 +148,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
         try
         {
-            var from = company.LastSyncedAtUtc?.AddDays(-2)
-                       ?? DateTime.UtcNow.AddDays(-31);
-
+            var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
             var to = DateTime.UtcNow;
-
             var loaded = 0;
             var offset = 0;
 
@@ -129,9 +166,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 foreach (var item in page.PageData)
                 {
                     var exists = await _db.EfrsbMessages.AnyAsync(
-                        x =>
-                            x.FedresursGuid == item.Guid &&
-                            x.TrackedCompanyId == company.Id,
+                        x => x.FedresursGuid == item.Guid && x.TrackedCompanyId == company.Id,
                         cancellationToken);
 
                     if (exists)
@@ -157,12 +192,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     };
 
                     _db.EfrsbMessages.Add(message);
-
                     await _db.SaveChangesAsync(cancellationToken);
 
-                    await SaveFilesArchiveAsync(
-                        message,
-                        cancellationToken);
+                    await SaveFilesArchiveAsync(message, cancellationToken);
 
                     _db.UserMessageStates.Add(new UserMessageState
                     {
@@ -174,15 +206,13 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     loaded++;
                 }
 
-                if (offset + page.PageData.Count >= page.Total ||
-                    page.PageData.Count == 0)
+                if (offset + page.PageData.Count >= page.Total || page.PageData.Count == 0)
                     break;
 
                 offset += page.PageData.Count;
             }
 
             company.LastSyncedAtUtc = DateTime.UtcNow;
-
             log.Success = true;
             log.MessagesLoaded = loaded;
             log.FinishedAtUtc = DateTime.UtcNow;
@@ -209,9 +239,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         CancellationToken cancellationToken = default)
     {
         return await _db.EfrsbMessages
-            .Where(x =>
-                x.TrackedCompanyId == trackedCompanyId &&
-                x.TrackedCompany!.UserId == userId)
+            .Where(x => x.TrackedCompanyId == trackedCompanyId && x.TrackedCompany!.UserId == userId)
             .OrderByDescending(x => x.DatePublish)
             .Select(x => new EfrsbMessageDto(
                 x.Id,
@@ -238,9 +266,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             .Include(x => x.Files)
             .Include(x => x.UserStates)
             .FirstOrDefaultAsync(
-                x =>
-                    x.Id == messageId &&
-                    x.TrackedCompany!.UserId == userId,
+                x => x.Id == messageId && x.TrackedCompany!.UserId == userId,
                 cancellationToken);
 
         if (message is null)
@@ -272,9 +298,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         var state = await _db.UserMessageStates
             .FirstOrDefaultAsync(
-                x =>
-                    x.UserId == userId &&
-                    x.EfrsbMessageId == messageId,
+                x => x.UserId == userId && x.EfrsbMessageId == messageId,
                 cancellationToken);
 
         if (state is null)
@@ -303,10 +327,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         var unread = await _db.UserMessageStates
             .CountAsync(
-                x =>
-                    x.UserId == userId &&
-                    !x.IsRead &&
-                    x.Message!.TrackedCompanyId == company.Id,
+                x => x.UserId == userId
+                     && !x.IsRead
+                     && x.Message!.TrackedCompanyId == company.Id,
                 cancellationToken);
 
         return new TrackedCompanyDto(
@@ -326,11 +349,10 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         try
         {
-            var archiveBytes =
-                await _fedresurs.DownloadMessageFilesArchiveAsync(
-                    message.FedresursGuid,
-                    true,
-                    cancellationToken);
+            var archiveBytes = await _fedresurs.DownloadMessageFilesArchiveAsync(
+                message.FedresursGuid,
+                true,
+                cancellationToken);
 
             if (archiveBytes.Length == 0)
                 return;
@@ -352,8 +374,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
             using var zip = ZipFile.OpenRead(archivePath);
 
-            foreach (var entry in zip.Entries.Where(e =>
-                         !string.IsNullOrWhiteSpace(e.Name)))
+            foreach (var entry in zip.Entries.Where(e => !string.IsNullOrWhiteSpace(e.Name)))
             {
                 _db.EfrsbMessageFiles.Add(new EfrsbMessageFile
                 {

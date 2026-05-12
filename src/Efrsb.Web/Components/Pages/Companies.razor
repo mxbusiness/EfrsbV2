@@ -8,8 +8,11 @@
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+
 @inject ICompanyTrackingService CompanyService
 @inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
 
 <h1>Отслеживаемые компании</h1>
 
@@ -20,12 +23,12 @@
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <p style="color: red">@error</p>
+    <p class="error">@error</p>
 }
 
 @if (!string.IsNullOrWhiteSpace(status))
 {
-    <p>@status</p>
+    <p class="muted">@status</p>
 }
 
 @if (companies is null)
@@ -46,7 +49,7 @@ else
                 <th>BankruptGuid</th>
                 <th>Непрочитанные</th>
                 <th>Синхронизация</th>
-                <th></th>
+                <th>Действия</th>
             </tr>
         </thead>
         <tbody>
@@ -57,10 +60,11 @@ else
                     <td>@c.Inn / @c.Ogrn</td>
                     <td>@c.BankruptGuid</td>
                     <td>@c.UnreadCount</td>
-                    <td>@c.LastSyncedAtUtc</td>
-                    <td>
-                        <a class="button" href="@($"/companies/{c.Id}/messages")">Сообщения</a>
+                    <td>@c.LastSyncedAtUtc?.ToLocalTime()</td>
+                    <td class="actions-cell">
+                        <a href="@($"/companies/{c.Id}/messages")">Сообщения</a>
                         <button @onclick="() => Sync(c.Id)">Обновить</button>
+                        <button class="danger" @onclick="() => Delete(c.Id)">Удалить</button>
                     </td>
                 </tr>
             }
@@ -110,10 +114,15 @@ else
             }
 
             var userId = await GetUserId();
-            await CompanyService.AddCompanyAsync(userId, query, CancellationToken.None);
+
+            await CompanyService.AddCompanyAsync(
+                userId,
+                query,
+                CancellationToken.None);
 
             query = string.Empty;
             status = "Компания добавлена.";
+
             await Load();
         }
         catch (Exception ex)
@@ -131,9 +140,47 @@ else
         try
         {
             var userId = await GetUserId();
-            await CompanyService.SyncCompanyAsync(userId, id, CancellationToken.None);
+
+            await CompanyService.SyncCompanyAsync(
+                userId,
+                id,
+                CancellationToken.None);
 
             status = "Синхронизация завершена.";
+
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+    }
+
+    private async Task Delete(Guid id)
+    {
+        error = null;
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Удалить компанию из отслеживания? Все загруженные сообщения по ней тоже будут удалены.");
+
+        if (!confirmed)
+            return;
+
+        status = "Удаляем компанию...";
+
+        try
+        {
+            var userId = await GetUserId();
+
+            await CompanyService.DeleteCompanyAsync(
+                userId,
+                id,
+                CancellationToken.None);
+
+            status = "Компания удалена.";
+
             await Load();
         }
         catch (Exception ex)
