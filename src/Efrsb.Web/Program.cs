@@ -1,4 +1,4 @@
-// program.cs
+//
 using Efrsb.Infrastructure;
 using Efrsb.Infrastructure.Data;
 using Efrsb.Infrastructure.Jobs;
