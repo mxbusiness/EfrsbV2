@@ -72,6 +72,7 @@ else
                     <td class="actions-cell">
                         <a href="@($"/companies/{c.Id}/messages")">Сообщения</a>
                         <button @onclick="() => Sync(c.Id)">Обновить</button>
+                        <button @onclick="() => SyncHistory(c.Id)">Догрузить историю</button>
                         <button class="danger" @onclick="() => Delete(c.Id)">Удалить</button>
                     </td>
                 </tr>
@@ -143,18 +144,51 @@ else
     private async Task Sync(Guid id)
     {
         error = null;
-        status = "Синхронизация...";
+        status = "Синхронизация свежих сообщений...";
 
         try
         {
             var userId = await GetUserId();
 
-            await CompanyService.SyncCompanyAsync(
+            var loaded = await CompanyService.SyncCompanyAsync(
                 userId,
                 id,
                 CancellationToken.None);
 
-            status = "Синхронизация завершена.";
+            status = $"Синхронизация завершена. Новых сообщений: {loaded}.";
+
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+    }
+
+    private async Task SyncHistory(Guid id)
+    {
+        error = null;
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Догрузить всю историю сообщений по компании? Это может занять некоторое время.");
+
+        if (!confirmed)
+            return;
+
+        status = "Догружаем историю сообщений...";
+
+        try
+        {
+            var userId = await GetUserId();
+
+            var loaded = await CompanyService.SyncCompanyHistoryAsync(
+                userId,
+                id,
+                CancellationToken.None);
+
+            status = $"История догружена. Новых сообщений: {loaded}.";
 
             await Load();
         }

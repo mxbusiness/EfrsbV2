@@ -171,68 +171,17 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
             var to = DateTime.UtcNow;
             var loaded = 0;
-            var offset = 0;
 
-            while (true)
-            {
-                var page = await _fedresurs.GetMessagesAsync(
-                    company.BankruptGuid,
-                    from,
-                    to,
-                    1000,
-                    offset,
-                    cancellationToken);
-
-                foreach (var item in page.PageData)
-                {
-                    var exists = await _db.EfrsbMessages.AnyAsync(
-                        x => x.FedresursGuid == item.Guid && x.TrackedCompanyId == company.Id,
-                        cancellationToken);
-
-                    if (exists)
-                        continue;
-
-                    var details = await _fedresurs.GetMessageAsync(
-                        item.Guid,
-                        cancellationToken) ?? item;
-
-                    var message = new EfrsbMessage
-                    {
-                        TrackedCompanyId = company.Id,
-                        FedresursGuid = item.Guid,
-                        BankruptGuid = item.BankruptGuid,
-                        Number = item.Number,
-                        DatePublish = NormalizeFedresursDate(item.DatePublish),
-                        Type = item.Type,
-                        CourtDecisionType = item.CourtDecisionType,
-                        ContentXml = details.Content ?? item.Content,
-                        HasViolation = item.HasViolation,
-                        IsLocked = !string.IsNullOrWhiteSpace(item.LockReason),
-                        LockReason = item.LockReason
-                    };
-
-                    _db.EfrsbMessages.Add(message);
-                    await _db.SaveChangesAsync(cancellationToken);
-
-                    await SaveFilesArchiveAsync(message, cancellationToken);
-
-                    _db.UserMessageStates.Add(new UserMessageState
-                    {
-                        UserId = userId,
-                        EfrsbMessageId = message.Id,
-                        IsRead = false
-                    });
-
-                    loaded++;
-                }
-
-                if (offset + page.PageData.Count >= page.Total || page.PageData.Count == 0)
-                    break;
-
-                offset += page.PageData.Count;
-            }
+            loaded += await SyncMessagesRangeAsync(
+                userId,
+                company,
+                from,
+                to,
+                cancellationToken);
 
             company.LastSyncedAtUtc = DateTime.UtcNow;
+            company.LoadedMessages = await CountLoadedMessagesAsync(company.Id, cancellationToken);
+
             log.Success = true;
             log.MessagesLoaded = loaded;
             log.FinishedAtUtc = DateTime.UtcNow;
@@ -240,6 +189,86 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             await _db.SaveChangesAsync(cancellationToken);
 
             return loaded;
+        }
+        catch (Exception ex)
+        {
+            log.Success = false;
+            log.Error = ex.Message;
+            log.FinishedAtUtc = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(cancellationToken);
+
+            throw;
+        }
+    }
+
+    public async Task<int> SyncCompanyHistoryAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        var company = await _db.TrackedCompanies
+            .FirstOrDefaultAsync(
+                x => x.Id == trackedCompanyId && x.UserId == userId,
+                cancellationToken)
+            ?? throw new InvalidOperationException("Tracked company not found.");
+
+        if (string.IsNullOrWhiteSpace(company.BankruptGuid))
+            throw new InvalidOperationException("Company has no BankruptGuid.");
+
+        var log = new FedresursSyncLog
+        {
+            TrackedCompanyId = company.Id
+        };
+
+        _db.FedresursSyncLogs.Add(log);
+
+        try
+        {
+            await RefreshMetadataAsync(company, cancellationToken);
+
+            if (company.FirstMessageDate is null)
+            {
+                log.Success = true;
+                log.MessagesLoaded = 0;
+                log.FinishedAtUtc = DateTime.UtcNow;
+
+                await _db.SaveChangesAsync(cancellationToken);
+
+                return 0;
+            }
+
+            var totalLoaded = 0;
+            var from = company.FirstMessageDate.Value;
+            var finalTo = DateTime.UtcNow;
+
+            while (from < finalTo)
+            {
+                var to = from.AddDays(31);
+
+                if (to > finalTo)
+                    to = finalTo;
+
+                totalLoaded += await SyncMessagesRangeAsync(
+                    userId,
+                    company,
+                    from,
+                    to,
+                    cancellationToken);
+
+                from = to;
+            }
+
+            company.LastSyncedAtUtc = DateTime.UtcNow;
+            company.LoadedMessages = await CountLoadedMessagesAsync(company.Id, cancellationToken);
+
+            log.Success = true;
+            log.MessagesLoaded = totalLoaded;
+            log.FinishedAtUtc = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(cancellationToken);
+
+            return totalLoaded;
         }
         catch (Exception ex)
         {
@@ -340,6 +369,81 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task<int> SyncMessagesRangeAsync(
+        Guid userId,
+        TrackedCompany company,
+        DateTime from,
+        DateTime to,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(company.BankruptGuid))
+            return 0;
+
+        var loaded = 0;
+        var offset = 0;
+
+        while (true)
+        {
+            var page = await _fedresurs.GetMessagesAsync(
+                company.BankruptGuid,
+                from,
+                to,
+                1000,
+                offset,
+                cancellationToken);
+
+            foreach (var item in page.PageData)
+            {
+                var exists = await _db.EfrsbMessages.AnyAsync(
+                    x => x.FedresursGuid == item.Guid && x.TrackedCompanyId == company.Id,
+                    cancellationToken);
+
+                if (exists)
+                    continue;
+
+                var details = await _fedresurs.GetMessageAsync(
+                    item.Guid,
+                    cancellationToken) ?? item;
+
+                var message = new EfrsbMessage
+                {
+                    TrackedCompanyId = company.Id,
+                    FedresursGuid = item.Guid,
+                    BankruptGuid = item.BankruptGuid,
+                    Number = item.Number,
+                    DatePublish = NormalizeFedresursDate(item.DatePublish),
+                    Type = item.Type,
+                    CourtDecisionType = item.CourtDecisionType,
+                    ContentXml = details.Content ?? item.Content,
+                    HasViolation = item.HasViolation,
+                    IsLocked = !string.IsNullOrWhiteSpace(item.LockReason),
+                    LockReason = item.LockReason
+                };
+
+                _db.EfrsbMessages.Add(message);
+                await _db.SaveChangesAsync(cancellationToken);
+
+                await SaveFilesArchiveAsync(message, cancellationToken);
+
+                _db.UserMessageStates.Add(new UserMessageState
+                {
+                    UserId = userId,
+                    EfrsbMessageId = message.Id,
+                    IsRead = false
+                });
+
+                loaded++;
+            }
+
+            if (offset + page.PageData.Count >= page.Total || page.PageData.Count == 0)
+                break;
+
+            offset += page.PageData.Count;
+        }
+
+        return loaded;
+    }
+
     private async Task RefreshMetadataAsync(
         TrackedCompany company,
         CancellationToken cancellationToken)
@@ -379,10 +483,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                      && x.Message!.TrackedCompanyId == company.Id,
                 cancellationToken);
 
-        var loaded = await _db.EfrsbMessages
-            .CountAsync(
-                x => x.TrackedCompanyId == company.Id,
-                cancellationToken);
+        var loaded = await CountLoadedMessagesAsync(company.Id, cancellationToken);
 
         company.LoadedMessages = loaded;
 
@@ -400,6 +501,16 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             company.FirstMessageDate,
             company.LastMessageDate,
             company.LastMetadataSyncAtUtc);
+    }
+
+    private async Task<int> CountLoadedMessagesAsync(
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken)
+    {
+        return await _db.EfrsbMessages
+            .CountAsync(
+                x => x.TrackedCompanyId == trackedCompanyId,
+                cancellationToken);
     }
 
     private async Task SaveFilesArchiveAsync(

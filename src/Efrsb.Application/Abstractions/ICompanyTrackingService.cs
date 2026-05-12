@@ -12,4 +12,5 @@ public interface ICompanyTrackingService
     Task<EfrsbMessageDetailsDto?> GetMessageDetailsAsync(Guid userId, Guid messageId, CancellationToken cancellationToken = default);
     Task MarkMessageReadAsync(Guid userId, Guid messageId, CancellationToken cancellationToken = default);
     Task DeleteCompanyAsync(Guid userId, Guid trackedCompanyId, CancellationToken cancellationToken = default);
+    Task<int> SyncCompanyHistoryAsync(Guid userId, Guid trackedCompanyId, CancellationToken cancellationToken = default);
 }
