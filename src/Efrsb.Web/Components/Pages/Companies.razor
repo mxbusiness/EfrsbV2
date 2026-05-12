@@ -59,6 +59,7 @@ else
                     <td>@c.UnreadCount</td>
                     <td>@c.LastSyncedAtUtc</td>
                     <td>
+                        <a class="button" href="@($"/companies/{c.Id}/messages")">Сообщения</a>
                         <button @onclick="() => Sync(c.Id)">Обновить</button>
                     </td>
                 </tr>
