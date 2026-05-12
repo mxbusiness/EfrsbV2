@@ -15,21 +15,16 @@ public sealed class FedresursClient : IFedresursClient
     private string? _jwt;
     private DateTime _jwtExpiresAtUtc;
 
-    public FedresursClient(
-        HttpClient httpClient,
-        IOptions<FedresursOptions> options)
+    public FedresursClient(HttpClient httpClient, IOptions<FedresursOptions> options)
     {
         _httpClient = httpClient;
         _options = options.Value;
-
-        _httpClient.BaseAddress =
-            new Uri(_options.BaseUrl.TrimEnd('/') + "/");
+        _httpClient.BaseAddress = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
     }
 
-    public async Task<FedresursPagedResponse<FedresursBankruptItem>>
-        SearchBankruptsAsync(
-            string query,
-            CancellationToken cancellationToken = default)
+    public async Task<FedresursPagedResponse<FedresursBankruptItem>> SearchBankruptsAsync(
+        string query,
+        CancellationToken cancellationToken = default)
     {
         await EnsureAuthorizedAsync(cancellationToken);
 
@@ -62,11 +57,6 @@ public sealed class FedresursClient : IFedresursClient
                 parameters.Add("type=Person");
                 parameters.Add($"inn={Uri.EscapeDataString(query)}");
             }
-            else if (query.Length == 15)
-            {
-                parameters.Add("type=Person");
-                parameters.Add($"snils={Uri.EscapeDataString(query)}");
-            }
             else
             {
                 parameters.Add("type=Company");
@@ -81,20 +71,17 @@ public sealed class FedresursClient : IFedresursClient
 
         var url = "v1/bankrupts?" + string.Join('&', parameters);
 
-        return await GetJsonAsync<FedresursPagedResponse<FedresursBankruptItem>>(
-                   url,
-                   cancellationToken)
+        return await GetJsonAsync<FedresursPagedResponse<FedresursBankruptItem>>(url, cancellationToken)
                ?? new FedresursPagedResponse<FedresursBankruptItem>();
     }
 
-    public async Task<FedresursPagedResponse<FedresursMessageItem>>
-        GetMessagesAsync(
-            string? bankruptGuid,
-            DateTime dateFrom,
-            DateTime dateTo,
-            int limit = 1000,
-            int offset = 0,
-            CancellationToken cancellationToken = default)
+    public async Task<FedresursPagedResponse<FedresursMessageItem>> GetMessagesAsync(
+        string? bankruptGuid,
+        DateTime dateFrom,
+        DateTime dateTo,
+        int limit = 1000,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
     {
         await EnsureAuthorizedAsync(cancellationToken);
 
@@ -117,9 +104,7 @@ public sealed class FedresursClient : IFedresursClient
         };
 
         if (!string.IsNullOrWhiteSpace(bankruptGuid))
-        {
             parts.Add($"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}");
-        }
 
         return await GetJsonAsync<FedresursPagedResponse<FedresursMessageItem>>(
                    "v1/messages?" + string.Join('&', parts),
@@ -150,20 +135,16 @@ public sealed class FedresursClient : IFedresursClient
             cancellationToken);
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
             return Array.Empty<byte>();
-        }
 
         response.EnsureSuccessStatusCode();
 
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
-    private async Task EnsureAuthorizedAsync(
-        CancellationToken cancellationToken)
+    private async Task EnsureAuthorizedAsync(CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_jwt) &&
-            DateTime.UtcNow < _jwtExpiresAtUtc)
+        if (!string.IsNullOrWhiteSpace(_jwt) && DateTime.UtcNow < _jwtExpiresAtUtc)
         {
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _jwt);
@@ -182,38 +163,28 @@ public sealed class FedresursClient : IFedresursClient
 
         response.EnsureSuccessStatusCode();
 
-        var auth =
-            await response.Content.ReadFromJsonAsync<FedresursAuthResponse>(
-                cancellationToken: cancellationToken)
-            ?? throw new InvalidOperationException(
-                "Fedresurs auth returned empty response.");
+        var auth = await response.Content.ReadFromJsonAsync<FedresursAuthResponse>(
+                       cancellationToken: cancellationToken)
+                   ?? throw new InvalidOperationException("Fedresurs auth returned empty response.");
 
         _jwt = auth.Jwt;
-
-        _jwtExpiresAtUtc =
-            DateTime.UtcNow.AddHours(7).AddMinutes(45);
+        _jwtExpiresAtUtc = DateTime.UtcNow.AddHours(7).AddMinutes(45);
 
         _httpClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", _jwt);
     }
 
-    private async Task<T?> GetJsonAsync<T>(
-        string url,
-        CancellationToken cancellationToken)
+    private async Task<T?> GetJsonAsync<T>(string url, CancellationToken cancellationToken)
     {
-        var response =
-            await _httpClient.GetAsync(url, cancellationToken);
+        var response = await _httpClient.GetAsync(url, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
-            var body =
-                await response.Content.ReadAsStringAsync(cancellationToken);
-
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException(
                 $"Fedresurs request failed: {(int)response.StatusCode} {response.ReasonPhrase}. Url: {url}. Body: {body}");
         }
 
-        return await response.Content.ReadFromJsonAsync<T>(
-            cancellationToken: cancellationToken);
+        return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
     }
 }
