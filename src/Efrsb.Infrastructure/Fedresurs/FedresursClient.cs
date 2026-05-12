@@ -29,10 +29,39 @@ public sealed class FedresursClient : IFedresursClient
     {
         await EnsureAuthorizedAsync(cancellationToken);
 
-        var url = $"v1/bankrupts?searchString={Uri.EscapeDataString(query)}&limit=20&offset=0";
+        var normalized = query.Trim();
+
+        if (string.IsNullOrWhiteSpace(normalized))
+            return new FedresursPagedResponse<FedresursBankruptItem>();
+
+        var parts = new List<string>
+        {
+            "limit=20",
+            "offset=0"
+        };
+
+        if (normalized.Length == 10 && normalized.All(char.IsDigit))
+        {
+            parts.Add("type=Company");
+            parts.Add($"inn={Uri.EscapeDataString(normalized)}");
+        }
+        else if (normalized.Length == 13 && normalized.All(char.IsDigit))
+        {
+            parts.Add("type=Company");
+            parts.Add($"ogrn={Uri.EscapeDataString(normalized)}");
+        }
+        else if (Guid.TryParse(normalized, out _))
+        {
+            parts.Add($"guid={Uri.EscapeDataString(normalized)}");
+        }
+        else
+        {
+            parts.Add("type=Company");
+            parts.Add($"name={Uri.EscapeDataString(normalized)}");
+        }
 
         return await GetJsonAsync<FedresursPagedResponse<FedresursBankruptItem>>(
-            url,
+            "v1/bankrupts?" + string.Join('&', parts),
             cancellationToken) ?? new FedresursPagedResponse<FedresursBankruptItem>();
     }
 
