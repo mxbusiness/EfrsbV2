@@ -1,0 +1,206 @@
+﻿@using System.Xml.Linq
+@using Microsoft.JSInterop
+
+<div class="xml-viewer">
+    <div class="xml-toolbar">
+        <button class="xml-btn @(structuredView ? "active" : "")"
+                @onclick="() => structuredView = true">
+            Приведенный вид
+        </button>
+
+        <button class="xml-btn @(!structuredView ? "active" : "")"
+                @onclick="() => structuredView = false">
+            Оригинальный XML
+        </button>
+
+        <button class="xml-btn"
+                @onclick="CopyXml">
+            Копировать XML
+        </button>
+    </div>
+
+    @if (structuredView)
+    {
+        <div class="structured-view">
+            <div class="info-block">
+                <h3>Дело</h3>
+                <div class="info-row">
+                    <span class="label">Номер дела</span>
+                    <span>@GetValue("CaseNumber")</span>
+                </div>
+            </div>
+
+            <div class="info-block">
+                <h3>Должник</h3>
+                <div class="info-row">
+                    <span class="label">Название</span>
+                    <span>@GetValue("Bankrupt/Name")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">ИНН</span>
+                    <span>@GetValue("Bankrupt/Inn")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">ОГРН</span>
+                    <span>@GetValue("Bankrupt/Ogrn")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">Адрес</span>
+                    <span>@GetValue("Bankrupt/Address")</span>
+                </div>
+            </div>
+
+            <div class="info-block">
+                <h3>Публикатор</h3>
+                <div class="info-row">
+                    <span class="label">ФИО</span>
+                    <span>@PublisherName</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">ИНН</span>
+                    <span>@GetValue("Publisher/Inn")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">СНИЛС</span>
+                    <span>@GetValue("Publisher/Snils")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">Адрес</span>
+                    <span>@GetValue("Publisher/CorrespondenceAddress")</span>
+                </div>
+            </div>
+
+            <div class="info-block">
+                <h3>СРО</h3>
+                <div class="info-row">
+                    <span class="label">Название</span>
+                    <span>@GetValue("Publisher/Sro/Name")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">ИНН</span>
+                    <span>@GetValue("Publisher/Sro/Inn")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">ОГРН</span>
+                    <span>@GetValue("Publisher/Sro/Ogrn")</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">Адрес</span>
+                    <span>@GetValue("Publisher/Sro/Address")</span>
+                </div>
+            </div>
+
+            <div class="info-block">
+                <h3>Сообщение</h3>
+                <div class="info-row">
+                    <span class="label">Тип</span>
+                    <span>@MessageType</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">Форма</span>
+                    <span>@GetValue("MessageInfo/MeetingResult/MeetingForm")</span>
+                </div>
+
+                <div class="message-text">
+                    @GetValue("MessageInfo/MeetingResult/Text")
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <pre class="xml-raw">@FormattedXml</pre>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string XmlContent { get; set; } = string.Empty;
+
+    private bool structuredView = true;
+
+    private XDocument? document;
+
+    [Inject]
+    private IJSRuntime JS { get; set; } = default!;
+
+    protected override void OnParametersSet()
+    {
+        try
+        {
+            document = XDocument.Parse(XmlContent);
+        }
+        catch
+        {
+            document = null;
+        }
+    }
+
+    private string FormattedXml
+    {
+        get
+        {
+            if (document == null)
+                return XmlContent;
+
+            return document.ToString();
+        }
+    }
+
+    private string MessageType =>
+        document?
+            .Descendants("MessageInfo")
+            .Attributes("MessageType")
+            .FirstOrDefault()?.Value
+        ?? "-";
+
+    private string PublisherName
+    {
+        get
+        {
+            var fio = document?.Descendants("Fio").FirstOrDefault();
+
+            if (fio == null)
+                return "-";
+
+            var last = fio.Element("LastName")?.Value;
+            var first = fio.Element("FirstName")?.Value;
+            var middle = fio.Element("MiddleName")?.Value;
+
+            return $"{last} {first} {middle}".Trim();
+        }
+    }
+
+    private string GetValue(string path)
+    {
+        if (document?.Root == null)
+            return "-";
+
+        try
+        {
+            var parts = path.Split('/');
+            XElement? current = document.Root;
+
+            foreach (var part in parts)
+            {
+                current = current.Element(part);
+
+                if (current == null)
+                    return "-";
+            }
+
+            return string.IsNullOrWhiteSpace(current.Value)
+                ? "-"
+                : current.Value;
+        }
+        catch
+        {
+            return "-";
+        }
+    }
+
+    private async Task CopyXml()
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", FormattedXml);
+    }
+}

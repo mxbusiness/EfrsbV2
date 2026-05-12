@@ -30,7 +30,7 @@ else
     <p><b>Статус:</b> @(message.IsRead ? "прочитано" : "новое")</p>
 
     <h3>XML / содержимое</h3>
-    <pre style="white-space: pre-wrap">@message.ContentXml</pre>
+    <MessageXmlViewer XmlContent="@message.ContentXml" />
 
     <h3>Файлы</h3>
 
