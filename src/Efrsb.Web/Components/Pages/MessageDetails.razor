@@ -1,16 +1,112 @@
 @page "/messages/{MessageId:guid}"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
-@inject HttpClient Http
+
+@using System.Security.Claims
+@using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Messages
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Web
+
+@inject ICompanyTrackingService CompanyService
+@inject AuthenticationStateProvider AuthState
+
 <h1>Сообщение</h1>
-@if(message is null){<p>Загрузка...</p>} else {
-<div class="card"><h2>@message.Number — @message.Type</h2><p>@message.DatePublish</p><p>GUID: @message.FedresursGuid</p><button @onclick="MarkRead">Отметить прочитанным</button></div>
-<div class="card"><h3>Файлы</h3>@foreach(var f in message.Files){<p>@f.FileName (@f.SizeBytes байт)</p>}</div>
-<div class="card"><h3>XML</h3><pre>@message.ContentXml</pre></div>}
-@code{
-[Parameter] public Guid MessageId {get;set;}
-private EfrsbMessageDetailsDto? message;
-protected override async Task OnInitializedAsync(){ await Load(); }
-private async Task Load(){ message = await Http.GetFromJsonAsync<EfrsbMessageDetailsDto>($"/api/messages/{MessageId}"); }
-private async Task MarkRead(){ await Http.PostAsync($"/api/messages/{MessageId}/read", null); await Load(); }
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <p style="color:red">@error</p>
+}
+else if (message is null)
+{
+    <p>Загрузка...</p>
+}
+else
+{
+    <p><b>Номер:</b> @message.Number</p>
+    <p><b>Дата:</b> @message.DatePublish.ToLocalTime()</p>
+    <p><b>Тип:</b> @message.Type</p>
+    <p><b>Статус:</b> @(message.IsRead ? "прочитано" : "новое")</p>
+
+    <h3>XML / содержимое</h3>
+    <pre style="white-space: pre-wrap">@message.ContentXml</pre>
+
+    <h3>Файлы</h3>
+
+    @if (message.Files.Count == 0)
+    {
+        <p>Файлов нет.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th>Файл</th>
+                    <th>Размер</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in message.Files)
+                {
+                    <tr>
+                        <td>@f.FileName</td>
+                        <td>@f.SizeBytes</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+<p>
+    <a href="/companies">Назад к компаниям</a>
+</p>
+
+@code {
+    [Parameter]
+    public Guid MessageId { get; set; }
+
+    private EfrsbMessageDetailsDto? message;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var userId = await GetUserId();
+
+            message = await CompanyService.GetMessageDetailsAsync(
+                userId,
+                MessageId,
+                CancellationToken.None);
+
+            if (message is null)
+            {
+                error = "Сообщение не найдено.";
+                return;
+            }
+
+            await CompanyService.MarkMessageReadAsync(
+                userId,
+                MessageId,
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task<Guid> GetUserId()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Пользователь не авторизован.");
+
+        return Guid.Parse(value);
+    }
 }
