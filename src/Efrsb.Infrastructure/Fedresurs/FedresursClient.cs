@@ -11,11 +11,12 @@ public sealed class FedresursClient : IFedresursClient
 {
     private readonly HttpClient _httpClient;
     private readonly FedresursOptions _options;
-
     private string? _jwt;
     private DateTime _jwtExpiresAtUtc;
 
-    public FedresursClient(HttpClient httpClient, IOptions<FedresursOptions> options)
+    public FedresursClient(
+        HttpClient httpClient,
+        IOptions<FedresursOptions> options)
     {
         _httpClient = httpClient;
         _options = options.Value;
@@ -28,51 +29,11 @@ public sealed class FedresursClient : IFedresursClient
     {
         await EnsureAuthorizedAsync(cancellationToken);
 
-        query = query.Trim();
+        var url = $"v1/bankrupts?searchString={Uri.EscapeDataString(query)}&limit=20&offset=0";
 
-        var parameters = new List<string>
-        {
-            "limit=20",
-            "offset=0"
-        };
-
-        if (Guid.TryParse(query, out _))
-        {
-            parameters.Add($"guid={Uri.EscapeDataString(query)}");
-        }
-        else if (query.All(char.IsDigit))
-        {
-            if (query.Length == 10)
-            {
-                parameters.Add("type=Company");
-                parameters.Add($"inn={Uri.EscapeDataString(query)}");
-            }
-            else if (query.Length == 13)
-            {
-                parameters.Add("type=Company");
-                parameters.Add($"ogrn={Uri.EscapeDataString(query)}");
-            }
-            else if (query.Length == 12)
-            {
-                parameters.Add("type=Person");
-                parameters.Add($"inn={Uri.EscapeDataString(query)}");
-            }
-            else
-            {
-                parameters.Add("type=Company");
-                parameters.Add($"name={Uri.EscapeDataString(query)}");
-            }
-        }
-        else
-        {
-            parameters.Add("type=Company");
-            parameters.Add($"name={Uri.EscapeDataString(query)}");
-        }
-
-        var url = "v1/bankrupts?" + string.Join('&', parameters);
-
-        return await GetJsonAsync<FedresursPagedResponse<FedresursBankruptItem>>(url, cancellationToken)
-               ?? new FedresursPagedResponse<FedresursBankruptItem>();
+        return await GetJsonAsync<FedresursPagedResponse<FedresursBankruptItem>>(
+            url,
+            cancellationToken) ?? new FedresursPagedResponse<FedresursBankruptItem>();
     }
 
     public async Task<FedresursPagedResponse<FedresursMessageItem>> GetMessagesAsync(
@@ -107,9 +68,30 @@ public sealed class FedresursClient : IFedresursClient
             parts.Add($"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}");
 
         return await GetJsonAsync<FedresursPagedResponse<FedresursMessageItem>>(
-                   "v1/messages?" + string.Join('&', parts),
-                   cancellationToken)
-               ?? new FedresursPagedResponse<FedresursMessageItem>();
+            "v1/messages?" + string.Join('&', parts),
+            cancellationToken) ?? new FedresursPagedResponse<FedresursMessageItem>();
+    }
+
+    public async Task<FedresursPagedResponse<FedresursMessageItem>> GetMessagesMetadataAsync(
+        string bankruptGuid,
+        string sort,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAuthorizedAsync(cancellationToken);
+
+        var parts = new List<string>
+        {
+            $"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}",
+            "includeContent=false",
+            "includeBankruptInfo=false",
+            "limit=1",
+            "offset=0",
+            $"sort={Uri.EscapeDataString(sort)}"
+        };
+
+        return await GetJsonAsync<FedresursPagedResponse<FedresursMessageItem>>(
+            "v1/messages?" + string.Join('&', parts),
+            cancellationToken) ?? new FedresursPagedResponse<FedresursMessageItem>();
     }
 
     public async Task<FedresursMessageItem?> GetMessageAsync(
@@ -164,8 +146,8 @@ public sealed class FedresursClient : IFedresursClient
         response.EnsureSuccessStatusCode();
 
         var auth = await response.Content.ReadFromJsonAsync<FedresursAuthResponse>(
-                       cancellationToken: cancellationToken)
-                   ?? throw new InvalidOperationException("Fedresurs auth returned empty response.");
+            cancellationToken: cancellationToken)
+            ?? throw new InvalidOperationException("Fedresurs auth returned empty response.");
 
         _jwt = auth.Jwt;
         _jwtExpiresAtUtc = DateTime.UtcNow.AddHours(7).AddMinutes(45);
@@ -174,17 +156,15 @@ public sealed class FedresursClient : IFedresursClient
             new AuthenticationHeaderValue("Bearer", _jwt);
     }
 
-    private async Task<T?> GetJsonAsync<T>(string url, CancellationToken cancellationToken)
+    private async Task<T?> GetJsonAsync<T>(
+        string url,
+        CancellationToken cancellationToken)
     {
         var response = await _httpClient.GetAsync(url, cancellationToken);
 
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException(
-                $"Fedresurs request failed: {(int)response.StatusCode} {response.ReasonPhrase}. Url: {url}. Body: {body}");
-        }
+        response.EnsureSuccessStatusCode();
 
-        return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
+        return await response.Content.ReadFromJsonAsync<T>(
+            cancellationToken: cancellationToken);
     }
 }

@@ -75,6 +75,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             Ogrn = first.Ogrn
         };
 
+        await RefreshMetadataAsync(entity, cancellationToken);
+
         _db.TrackedCompanies.Add(entity);
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -164,6 +166,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
         try
         {
+            await RefreshMetadataAsync(company, cancellationToken);
+
             var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
             var to = DateTime.UtcNow;
             var loaded = 0;
@@ -336,6 +340,33 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task RefreshMetadataAsync(
+        TrackedCompany company,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(company.BankruptGuid))
+            return;
+
+        var firstPage = await _fedresurs.GetMessagesMetadataAsync(
+            company.BankruptGuid,
+            "DatePublish:asc",
+            cancellationToken);
+
+        var lastPage = await _fedresurs.GetMessagesMetadataAsync(
+            company.BankruptGuid,
+            "DatePublish:desc",
+            cancellationToken);
+
+        company.TotalMessages = lastPage.Total;
+        company.FirstMessageDate = NormalizeNullableFedresursDate(
+            firstPage.PageData.FirstOrDefault()?.DatePublish);
+
+        company.LastMessageDate = NormalizeNullableFedresursDate(
+            lastPage.PageData.FirstOrDefault()?.DatePublish);
+
+        company.LastMetadataSyncAtUtc = DateTime.UtcNow;
+    }
+
     private async Task<TrackedCompanyDto> ToDtoAsync(
         TrackedCompany company,
         Guid userId,
@@ -348,6 +379,13 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                      && x.Message!.TrackedCompanyId == company.Id,
                 cancellationToken);
 
+        var loaded = await _db.EfrsbMessages
+            .CountAsync(
+                x => x.TrackedCompanyId == company.Id,
+                cancellationToken);
+
+        company.LoadedMessages = loaded;
+
         return new TrackedCompanyDto(
             company.Id,
             company.SearchQuery,
@@ -356,7 +394,12 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             company.Ogrn,
             company.BankruptGuid,
             unread,
-            company.LastSyncedAtUtc);
+            company.LastSyncedAtUtc,
+            company.TotalMessages,
+            loaded,
+            company.FirstMessageDate,
+            company.LastMessageDate,
+            company.LastMetadataSyncAtUtc);
     }
 
     private async Task SaveFilesArchiveAsync(
@@ -405,6 +448,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
         catch
         {
+            // Файлы не должны ломать синхронизацию сообщения.
         }
     }
 
@@ -417,5 +461,12 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             return value.ToUniversalTime();
 
         return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
+
+    private static DateTime? NormalizeNullableFedresursDate(DateTime? value)
+    {
+        return value.HasValue
+            ? NormalizeFedresursDate(value.Value)
+            : null;
     }
 }

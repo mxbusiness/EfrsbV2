@@ -48,6 +48,10 @@ else
                 <th>ИНН / ОГРН</th>
                 <th>BankruptGuid</th>
                 <th>Непрочитанные</th>
+                <th>Загружено</th>
+                <th>Всего в ЕФРСБ</th>
+                <th>Первая публикация</th>
+                <th>Последняя публикация</th>
                 <th>Синхронизация</th>
                 <th>Действия</th>
             </tr>
@@ -60,7 +64,11 @@ else
                     <td>@c.Inn / @c.Ogrn</td>
                     <td>@c.BankruptGuid</td>
                     <td>@c.UnreadCount</td>
-                    <td>@c.LastSyncedAtUtc?.ToLocalTime()</td>
+                    <td>@c.LoadedMessages</td>
+                    <td>@c.TotalMessages</td>
+                    <td>@FormatDate(c.FirstMessageDate)</td>
+                    <td>@FormatDate(c.LastMessageDate)</td>
+                    <td>@FormatDate(c.LastSyncedAtUtc)</td>
                     <td class="actions-cell">
                         <a href="@($"/companies/{c.Id}/messages")">Сообщения</a>
                         <button @onclick="() => Sync(c.Id)">Обновить</button>
@@ -188,5 +196,12 @@ else
             error = ex.Message;
             status = null;
         }
+    }
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue
+            ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm")
+            : "-";
     }
 }
