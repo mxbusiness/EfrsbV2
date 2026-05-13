@@ -196,3 +196,60 @@ button.danger {
 .error {
     color: #fca5a5;
 }
+
+.xml-full-block {
+    max-width: 100%;
+}
+
+.xml-details {
+    margin: 8px 0;
+    padding-left: 12px;
+    border-left: 1px solid #334155;
+}
+
+    .xml-details summary {
+        cursor: pointer;
+        color: #93c5fd;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+
+.xml-attr {
+    margin-left: 8px;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.xml-leaf-row {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(51, 65, 85, .45);
+}
+
+    .xml-leaf-row .label {
+        color: #93c5fd;
+    }
+
+.xml-long-row {
+    display: block;
+}
+
+    .xml-long-row .label {
+        display: block;
+        margin-bottom: 8px;
+    }
+
+.xml-long-text,
+.xml-direct-text {
+    display: block;
+    white-space: pre-wrap;
+    line-height: 1.55;
+    color: #e5e7eb;
+}
+
+.xml-direct-text {
+    margin: 8px 0 12px;
+}

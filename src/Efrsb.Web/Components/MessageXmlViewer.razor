@@ -1,11 +1,13 @@
 ﻿@using System.Xml.Linq
+@using Microsoft.AspNetCore.Components.Rendering
 @using Microsoft.JSInterop
+@inject IJSRuntime JS
 
 <div class="xml-viewer">
     <div class="xml-toolbar">
         <button class="xml-btn @(structuredView ? "active" : "")"
                 @onclick="() => structuredView = true">
-            Приведенный вид
+            Приведённый вид
         </button>
 
         <button class="xml-btn @(!structuredView ? "active" : "")"
@@ -13,103 +15,71 @@
             Оригинальный XML
         </button>
 
-        <button class="xml-btn"
-                @onclick="CopyXml">
+        <button class="xml-btn" @onclick="CopyXml">
             Копировать XML
         </button>
     </div>
 
-    @if (structuredView)
+    @if (!string.IsNullOrWhiteSpace(parseError))
+    {
+        <div class="info-block">
+            <h3>XML</h3>
+            <p class="muted">Не удалось разобрать XML. Показан оригинальный текст.</p>
+        </div>
+
+        <pre>@XmlContent</pre>
+    }
+    else if (structuredView)
     {
         <div class="structured-view">
             <div class="info-block">
                 <h3>Дело</h3>
-                <div class="info-row">
-                    <span class="label">Номер дела</span>
-                    <span>@GetValue("CaseNumber")</span>
-                </div>
+                @InfoRow("Номер дела", GetValue("CaseNumber"))
             </div>
 
             <div class="info-block">
                 <h3>Должник</h3>
-                <div class="info-row">
-                    <span class="label">Название</span>
-                    <span>@GetValue("Bankrupt/Name")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">ИНН</span>
-                    <span>@GetValue("Bankrupt/Inn")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">ОГРН</span>
-                    <span>@GetValue("Bankrupt/Ogrn")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">Адрес</span>
-                    <span>@GetValue("Bankrupt/Address")</span>
-                </div>
+                @InfoRow("Название", GetValue("Bankrupt/Name"))
+                @InfoRow("ИНН", GetValue("Bankrupt/Inn"))
+                @InfoRow("ОГРН", GetValue("Bankrupt/Ogrn"))
+                @InfoRow("Адрес", GetValue("Bankrupt/Address"))
+                @InfoRow("Категория", GetValue("Bankrupt/Category/Description"))
             </div>
 
             <div class="info-block">
                 <h3>Публикатор</h3>
-                <div class="info-row">
-                    <span class="label">ФИО</span>
-                    <span>@PublisherName</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">ИНН</span>
-                    <span>@GetValue("Publisher/Inn")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">СНИЛС</span>
-                    <span>@GetValue("Publisher/Snils")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">Адрес</span>
-                    <span>@GetValue("Publisher/CorrespondenceAddress")</span>
-                </div>
+                @InfoRow("ФИО", GetFio("Publisher/Fio"))
+                @InfoRow("ИНН", GetValue("Publisher/Inn"))
+                @InfoRow("СНИЛС", GetValue("Publisher/Snils"))
+                @InfoRow("Адрес", GetValue("Publisher/CorrespondenceAddress"))
+                @InfoRow("Email", GetValue("Publisher/Email"))
             </div>
 
             <div class="info-block">
                 <h3>СРО</h3>
-                <div class="info-row">
-                    <span class="label">Название</span>
-                    <span>@GetValue("Publisher/Sro/Name")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">ИНН</span>
-                    <span>@GetValue("Publisher/Sro/Inn")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">ОГРН</span>
-                    <span>@GetValue("Publisher/Sro/Ogrn")</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">Адрес</span>
-                    <span>@GetValue("Publisher/Sro/Address")</span>
-                </div>
+                @InfoRow("Название", GetValue("Publisher/Sro/Name"))
+                @InfoRow("ИНН", GetValue("Publisher/Sro/Inn"))
+                @InfoRow("ОГРН", GetValue("Publisher/Sro/Ogrn"))
+                @InfoRow("Адрес", GetValue("Publisher/Sro/Address"))
             </div>
 
-            <div class="info-block">
+            <div class="info-block xml-full-block">
                 <h3>Сообщение</h3>
-                <div class="info-row">
-                    <span class="label">Тип</span>
-                    <span>@MessageType</span>
-                </div>
-                <div class="info-row">
-                    <span class="label">Форма</span>
-                    <span>@GetValue("MessageInfo/MeetingResult/MeetingForm")</span>
-                </div>
-
-                <div class="message-text">
-                    @GetValue("MessageInfo/MeetingResult/Text")
-                </div>
+                @InfoRow("Тип", MessageType)
             </div>
+
+            @foreach (var node in GetMessageContentNodes())
+            {
+                <div class="info-block xml-full-block">
+                    <h3>@FriendlyName(node.Name.LocalName)</h3>
+                    @RenderXmlNode(node)
+                </div>
+            }
         </div>
     }
     else
     {
-        <pre class="xml-raw">@FormattedXml</pre>
+        <pre>@FormattedXml</pre>
     }
 </div>
 
@@ -118,89 +88,260 @@
     public string XmlContent { get; set; } = string.Empty;
 
     private bool structuredView = true;
-
     private XDocument? document;
+    private string? parseError;
 
-    [Inject]
-    private IJSRuntime JS { get; set; } = default!;
-
-    protected override void OnParametersSet()
-    {
-        try
-        {
-            document = XDocument.Parse(XmlContent);
-        }
-        catch
-        {
-            document = null;
-        }
-    }
+    private string MessageType =>
+        document?
+            .Root?
+            .Element("MessageInfo")?
+            .Attribute("MessageType")?
+            .Value
+            ?? "-";
 
     private string FormattedXml
     {
         get
         {
-            if (document == null)
+            if (document is null)
                 return XmlContent;
 
-            return document.ToString();
+            return document.ToString(SaveOptions.None);
         }
     }
 
-    private string MessageType =>
-        document?
-            .Descendants("MessageInfo")
-            .Attributes("MessageType")
-            .FirstOrDefault()?.Value
-        ?? "-";
-
-    private string PublisherName
+    protected override void OnParametersSet()
     {
-        get
+        parseError = null;
+        document = null;
+
+        if (string.IsNullOrWhiteSpace(XmlContent))
+            return;
+
+        try
         {
-            var fio = document?.Descendants("Fio").FirstOrDefault();
-
-            if (fio == null)
-                return "-";
-
-            var last = fio.Element("LastName")?.Value;
-            var first = fio.Element("FirstName")?.Value;
-            var middle = fio.Element("MiddleName")?.Value;
-
-            return $"{last} {first} {middle}".Trim();
+            document = XDocument.Parse(XmlContent, LoadOptions.PreserveWhitespace);
         }
+        catch (Exception ex)
+        {
+            parseError = ex.Message;
+        }
+    }
+
+    private IEnumerable<XElement> GetMessageContentNodes()
+    {
+        return document?
+            .Root?
+            .Element("MessageInfo")?
+            .Elements()
+            ?? Enumerable.Empty<XElement>();
     }
 
     private string GetValue(string path)
     {
-        if (document?.Root == null)
+        XElement? current = document?.Root;
+
+        foreach (var part in path.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (current is null)
+                return "-";
+
+            current = current.Element(part);
+        }
+
+        if (current is null)
             return "-";
 
-        try
+        var value = NormalizeText(current.Value);
+
+        return string.IsNullOrWhiteSpace(value) ? "-" : value;
+    }
+
+    private string GetFio(string path)
+    {
+        XElement? current = document?.Root;
+
+        foreach (var part in path.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
-            var parts = path.Split('/');
-            XElement? current = document.Root;
+            if (current is null)
+                return "-";
 
-            foreach (var part in parts)
-            {
-                current = current.Element(part);
-
-                if (current == null)
-                    return "-";
-            }
-
-            return string.IsNullOrWhiteSpace(current.Value)
-                ? "-"
-                : current.Value;
+            current = current.Element(part);
         }
-        catch
-        {
+
+        if (current is null)
             return "-";
+
+        var parts = new[]
+        {
+            current.Element("LastName")?.Value,
+            current.Element("FirstName")?.Value,
+            current.Element("MiddleName")?.Value
         }
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Select(x => x!.Trim());
+
+        var fio = string.Join(" ", parts);
+
+        return string.IsNullOrWhiteSpace(fio)
+            ? "-"
+            : fio;
+    }
+
+    private RenderFragment InfoRow(string label, string? value) => builder =>
+    {
+        var seq = 0;
+
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", "info-row");
+
+        builder.OpenElement(seq++, "span");
+        builder.AddAttribute(seq++, "class", "label");
+        builder.AddContent(seq++, label);
+        builder.CloseElement();
+
+        builder.OpenElement(seq++, "span");
+        builder.AddContent(seq++, string.IsNullOrWhiteSpace(value) ? "-" : value);
+        builder.CloseElement();
+
+        builder.CloseElement();
+    };
+
+    private RenderFragment RenderXmlNode(XElement element, int level = 0) => builder =>
+    {
+        var seq = 0;
+        var children = element.Elements().ToList();
+        var hasChildren = children.Count > 0;
+        var directText = NormalizeText(string.Concat(element.Nodes().OfType<XText>().Select(x => x.Value)));
+
+        if (!hasChildren)
+        {
+            var value = NormalizeText(element.Value);
+
+            if (string.IsNullOrWhiteSpace(value))
+                return;
+
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", value.Length > 300 ? "xml-leaf-row xml-long-row" : "xml-leaf-row");
+
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "label");
+            builder.AddContent(seq++, FriendlyName(element.Name.LocalName));
+            builder.CloseElement();
+
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", value.Length > 300 ? "xml-long-text" : "");
+            builder.AddContent(seq++, value);
+            builder.CloseElement();
+
+            builder.CloseElement();
+
+            return;
+        }
+
+        builder.OpenElement(seq++, "details");
+        builder.AddAttribute(seq++, "class", "xml-details");
+        builder.AddAttribute(seq++, "open", level < 3);
+
+        builder.OpenElement(seq++, "summary");
+        builder.AddContent(seq++, FriendlyName(element.Name.LocalName));
+
+        var attrs = element.Attributes()
+            .Where(x => !x.IsNamespaceDeclaration)
+            .ToList();
+
+        foreach (var attr in attrs)
+        {
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "xml-attr");
+            builder.AddContent(seq++, $"{attr.Name.LocalName}: {attr.Value}");
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+
+        if (!string.IsNullOrWhiteSpace(directText))
+        {
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", "xml-direct-text");
+            builder.AddContent(seq++, directText);
+            builder.CloseElement();
+        }
+
+        foreach (var child in children)
+            builder.AddContent(seq++, RenderXmlNode(child, level + 1));
+
+        builder.CloseElement();
+    };
+
+    private static string NormalizeText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return value
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n")
+            .Trim();
+    }
+
+    private static string FriendlyName(string name)
+    {
+        return name switch
+        {
+            "Text" => "Текст сообщения",
+            "Act" => "Сведения об акте",
+            "LegalCaseNumber" => "Номер дела",
+            "DecisionDate" => "Дата вынесения",
+            "Deals" => "Сделки",
+            "Deal" => "Сделка",
+            "Participants" => "Участники",
+            "Participant" => "Участник",
+            "ContestingReasons" => "Основания оспаривания",
+            "Reason" => "Основание",
+            "Result" => "Результат",
+            "SatisfiedSum" => "Сумма удовлетворения",
+            "Comment" => "Комментарий",
+            "Description" => "Описание",
+            "Code" => "Код",
+            "Name" => "Название",
+            "Inn" => "ИНН",
+            "Ogrn" => "ОГРН",
+            "Ogrnip" => "ОГРНИП",
+            "Snils" => "СНИЛС",
+            "Address" => "Адрес",
+            "Email" => "Email",
+            "Fio" => "ФИО",
+            "LastName" => "Фамилия",
+            "FirstName" => "Имя",
+            "MiddleName" => "Отчество",
+            "Type" => "Тип",
+            "Guid" => "GUID",
+            "DateApplication" => "Дата подачи заявления",
+            "IsApplicantArbitrManager" => "Заявитель — арбитражный управляющий",
+            "IsWithoutPrice" => "Цена отсутствует",
+            "DealInvalidMessageNumber" => "Номер сообщения об оспаривании",
+            "MeetingForm" => "Форма собрания",
+            "Place" => "Место",
+            "Date" => "Дата",
+            "Time" => "Время",
+            "Agenda" => "Повестка",
+            "Decision" => "Решение",
+            "Procedure" => "Процедура",
+            "ProcedureType" => "Тип процедуры",
+            "Report" => "Отчёт",
+            "Amount" => "Сумма",
+            "Creditor" => "Кредитор",
+            "Debtor" => "Должник",
+            "Publisher" => "Публикатор",
+            "Bankrupt" => "Должник",
+            "MessageInfo" => "Сообщение",
+            _ => name
+        };
     }
 
     private async Task CopyXml()
     {
-        await JS.InvokeVoidAsync("navigator.clipboard.writeText", FormattedXml);
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", XmlContent);
     }
 }
