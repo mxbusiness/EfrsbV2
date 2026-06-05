@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using Efrsb.Application.Abstractions;
 using Efrsb.Contracts.Companies;
@@ -23,6 +24,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     private readonly IEfrsbDbContext _db;
     private readonly IFedresursClient _fedresurs;
     private readonly string _filesRoot;
+    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> CompanySyncLocks = new();
+
     private readonly SemaphoreSlim _operationLock = new(1, 1);
 
     public CompanyTrackingService(
@@ -73,7 +76,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
     {
-        return RunSerializedAsync(
+        return RunCompanySyncSerializedAsync(
+            trackedCompanyId,
             () => SyncCompanyCoreAsync(userId, trackedCompanyId, cancellationToken),
             cancellationToken);
     }
@@ -83,7 +87,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
     {
-        return RunSerializedAsync(
+        return RunCompanySyncSerializedAsync(
+            trackedCompanyId,
             () => SyncCompanyHistoryCoreAsync(userId, trackedCompanyId, cancellationToken),
             cancellationToken);
     }
@@ -116,6 +121,34 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         return RunSerializedAsync(
             () => MarkMessageReadCoreAsync(userId, messageId, cancellationToken),
             cancellationToken);
+    }
+
+    public Task<int> MarkCompanyMessagesReadAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => MarkCompanyMessagesReadCoreAsync(userId, trackedCompanyId, cancellationToken),
+            cancellationToken);
+    }
+
+    private static async Task<T> RunCompanySyncSerializedAsync<T>(
+        Guid trackedCompanyId,
+        Func<Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        var gate = CompanySyncLocks.GetOrAdd(trackedCompanyId, _ => new SemaphoreSlim(1, 1));
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<T> RunSerializedAsync<T>(
@@ -410,8 +443,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         CancellationToken cancellationToken = default)
     {
         var message = await _db.EfrsbMessages
-            .Include(x => x.Files)
-            .Include(x => x.UserStates)
             .FirstOrDefaultAsync(
                 x => x.Id == messageId && x.TrackedCompany!.UserId == userId,
                 cancellationToken);
@@ -419,8 +450,19 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         if (message is null)
             return null;
 
-        var isRead = message.UserStates
-            .FirstOrDefault(x => x.UserId == userId)?.IsRead ?? false;
+        var isRead = await _db.UserMessageStates
+            .Where(x => x.UserId == userId && x.EfrsbMessageId == messageId)
+            .Select(x => x.IsRead)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var files = await _db.EfrsbMessageFiles
+            .Where(x => x.EfrsbMessageId == messageId)
+            .OrderBy(x => x.FileName)
+            .Select(f => new MessageFileDto(
+                f.Id,
+                f.FileName,
+                f.SizeBytes))
+            .ToListAsync(cancellationToken);
 
         return new EfrsbMessageDetailsDto(
             message.Id,
@@ -430,12 +472,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             message.Type,
             message.ContentXml,
             isRead,
-            message.Files
-                .Select(f => new MessageFileDto(
-                    f.Id,
-                    f.FileName,
-                    f.SizeBytes))
-                .ToList(),
+            files,
             message.CourtDecisionType);
     }
 
@@ -466,6 +503,65 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<int> MarkCompanyMessagesReadCoreAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        var companyExists = await _db.TrackedCompanies
+            .AnyAsync(
+                x => x.Id == trackedCompanyId && x.UserId == userId,
+                cancellationToken);
+
+        if (!companyExists)
+            return 0;
+
+        var messageIds = await _db.EfrsbMessages
+            .Where(x => x.TrackedCompanyId == trackedCompanyId)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        if (messageIds.Count == 0)
+            return 0;
+
+        var states = await _db.UserMessageStates
+            .Where(x => x.UserId == userId && messageIds.Contains(x.EfrsbMessageId))
+            .ToListAsync(cancellationToken);
+
+        var statesByMessageId = states.ToDictionary(x => x.EfrsbMessageId);
+        var changed = 0;
+        var now = DateTime.UtcNow;
+
+        foreach (var messageId in messageIds)
+        {
+            if (statesByMessageId.TryGetValue(messageId, out var state))
+            {
+                if (!state.IsRead)
+                {
+                    state.IsRead = true;
+                    state.ReadAtUtc = now;
+                    changed++;
+                }
+            }
+            else
+            {
+                _db.UserMessageStates.Add(new UserMessageState
+                {
+                    UserId = userId,
+                    EfrsbMessageId = messageId,
+                    IsRead = true,
+                    ReadAtUtc = now
+                });
+                changed++;
+            }
+        }
+
+        if (changed > 0)
+            await _db.SaveChangesAsync(cancellationToken);
+
+        return changed;
     }
 
     private async Task RemoveNonServiceRestMessagesAsync(
@@ -565,16 +661,15 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 };
 
                 _db.EfrsbMessages.Add(message);
-                await _db.SaveChangesAsync(cancellationToken);
-
-                await SaveFilesArchiveAsync(message, cancellationToken);
-
                 _db.UserMessageStates.Add(new UserMessageState
                 {
                     UserId = userId,
                     EfrsbMessageId = message.Id,
                     IsRead = false
                 });
+                await _db.SaveChangesAsync(cancellationToken);
+
+                await SaveFilesArchiveAsync(message, cancellationToken);
 
                 loaded++;
             }
@@ -641,16 +736,15 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 };
 
                 _db.EfrsbMessages.Add(report);
-                await _db.SaveChangesAsync(cancellationToken);
-
-                await SaveFilesArchiveAsync(report, cancellationToken);
-
                 _db.UserMessageStates.Add(new UserMessageState
                 {
                     UserId = userId,
                     EfrsbMessageId = report.Id,
                     IsRead = false
                 });
+                await _db.SaveChangesAsync(cancellationToken);
+
+                await SaveFilesArchiveAsync(report, cancellationToken);
 
                 loaded++;
             }
@@ -776,9 +870,11 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         Guid userId,
         CancellationToken cancellationToken)
     {
-        var unread = await _db.UserMessageStates
+        var unread = await _db.EfrsbMessages
+            .Where(x => x.TrackedCompanyId == company.Id)
             .CountAsync(
-                x => x.UserId == userId && !x.IsRead && x.Message!.TrackedCompanyId == company.Id,
+                x => !x.UserStates.Any(s => s.UserId == userId)
+                    || x.UserStates.Any(s => s.UserId == userId && !s.IsRead),
                 cancellationToken);
 
         var loaded = await CountLoadedMessagesAsync(company.Id, cancellationToken);

@@ -1,13 +1,17 @@
 @page "/companies"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
+@implements IDisposable
 @using System.Security.Claims
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
+@using Efrsb.Infrastructure.Jobs
+@using Hangfire
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.JSInterop
 @inject ICompanyTrackingService CompanyService
+@inject IBackgroundJobClient Jobs
 @inject AuthenticationStateProvider AuthState
 @inject IJSRuntime JS
 
@@ -103,10 +107,19 @@ else
     private string? error;
     private string? status;
     private bool isBusy;
+    private CancellationTokenSource? refreshCts;
 
     protected override async Task OnInitializedAsync()
     {
         await Load();
+        refreshCts = new CancellationTokenSource();
+        _ = RefreshLoop(refreshCts.Token);
+    }
+
+    public void Dispose()
+    {
+        refreshCts?.Cancel();
+        refreshCts?.Dispose();
     }
 
     private async Task<Guid> GetUserId()
@@ -119,10 +132,42 @@ else
         return Guid.Parse(value);
     }
 
-    private async Task Load()
+    private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        var userId = await GetUserId();
-        companies = await CompanyService.GetCompaniesAsync(userId, CancellationToken.None);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                await InvokeAsync(async () =>
+                {
+                    await Load(silent: true);
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Автообновление не должно ронять страницу.
+            }
+        }
+    }
+
+    private async Task Load(bool silent = false)
+    {
+        try
+        {
+            var userId = await GetUserId();
+            companies = await CompanyService.GetCompaniesAsync(userId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                error = ex.Message;
+        }
     }
 
     private async Task Add()
@@ -139,11 +184,10 @@ else
             var userId = await GetUserId();
             var company = await CompanyService.AddCompanyAsync(userId, query.Trim(), CancellationToken.None);
 
-            status = "Карточка добавлена. Загружаем историю публикаций...";
-            var loaded = await CompanyService.SyncCompanyHistoryAsync(userId, company.Id, CancellationToken.None);
-
             query = string.Empty;
-            status = $"Компания добавлена. Загружено новых сообщений: {loaded}.";
+            var companyId = company.Id;
+            status = "Компания добавлена. Догрузка истории запущена в фоне.";
+            Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyHistoryAsync(userId, companyId));
             await Load();
         }
         catch (Exception ex)

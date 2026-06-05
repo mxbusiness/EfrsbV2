@@ -49,6 +49,10 @@
                     <strong>@(message.IsRead ? "Прочитано" : "Новое")</strong>
                 </div>
             </div>
+
+            <div class="message-actions">
+                <button class="btn btn-secondary" @onclick="MarkRead" disabled="@(isBusy || message.IsRead)">Пометить прочитанным</button>
+            </div>
         </section>
 
         <section class="panel">
@@ -93,6 +97,7 @@
 
     private EfrsbMessageDetailsDto? message;
     private string? error;
+    private bool isBusy;
 
     protected override async Task OnInitializedAsync()
     {
@@ -111,14 +116,36 @@
                 return;
             }
 
-            await CompanyService.MarkMessageReadAsync(
-                userId,
-                MessageId,
-                CancellationToken.None);
+            // Сообщение больше не помечается прочитанным автоматически при открытии страницы.
+            // Пользователь сам нажимает кнопку или использует "Прочитать все" в карточке компании.
         }
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+    }
+
+    private async Task MarkRead()
+    {
+        if (message is null || message.IsRead)
+            return;
+
+        error = null;
+        isBusy = true;
+
+        try
+        {
+            var userId = await GetUserId();
+            await CompanyService.MarkMessageReadAsync(userId, MessageId, CancellationToken.None);
+            message = await CompanyService.GetMessageDetailsAsync(userId, MessageId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
         }
     }
 
@@ -212,6 +239,31 @@
 
     .summary-wide {
         grid-column: span 2;
+    }
+
+    .message-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+    }
+
+    .btn {
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
+    .btn:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+    }
+
+    .btn-secondary {
+        background: #334155;
+        color: #f8fafc;
     }
 
     .files-list {

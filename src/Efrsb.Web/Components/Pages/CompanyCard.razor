@@ -1,17 +1,21 @@
 @page "/companies/{CompanyId:guid}"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
+@implements IDisposable
 @using System.Security.Claims
 @using System.Xml.Linq
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
 @using Efrsb.Contracts.Messages
+@using Efrsb.Infrastructure.Jobs
+@using Hangfire
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.Components.Rendering
 @using Microsoft.JSInterop
 @inject ICompanyTrackingService CompanyService
+@inject IBackgroundJobClient Jobs
 @inject AuthenticationStateProvider AuthState
 @inject IJSRuntime JS
 
@@ -56,6 +60,7 @@ else if (company is not null)
 
             <div class="hero-actions" aria-label="Действия по компании">
                 <a href="@($"/companies/{CompanyId}/messages")" class="btn btn-secondary">Все сообщения</a>
+                <button class="btn btn-secondary" @onclick="MarkAllRead" disabled="@(isBusy || company.UnreadCount == 0)">Прочитать все</button>
                 <button class="btn btn-primary" @onclick="Sync" disabled="@isBusy">Обновить</button>
                 <button class="btn btn-primary" @onclick="SyncHistory" disabled="@isBusy">Догрузить историю</button>
             </div>
@@ -323,6 +328,7 @@ else if (company is not null)
     private string? error;
     private string? status;
     private bool isBusy;
+    private CancellationTokenSource? refreshCts;
 
     private IReadOnlyList<EfrsbMessageDto> Messages => messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
 
@@ -372,6 +378,14 @@ else if (company is not null)
     protected override async Task OnInitializedAsync()
     {
         await Load();
+        refreshCts = new CancellationTokenSource();
+        _ = RefreshLoop(refreshCts.Token);
+    }
+
+    public void Dispose()
+    {
+        refreshCts?.Cancel();
+        refreshCts?.Dispose();
     }
 
     private async Task<Guid> GetUserId()
@@ -384,9 +398,35 @@ else if (company is not null)
         return Guid.Parse(value);
     }
 
-    private async Task Load()
+    private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        error = null;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                await InvokeAsync(async () =>
+                {
+                    await Load(silent: true);
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Автообновление не должно ронять страницу.
+            }
+        }
+    }
+
+    private async Task Load(bool silent = false)
+    {
+        if (!silent)
+            error = null;
+
         detailsCache.Clear();
 
         try
@@ -397,7 +437,8 @@ else if (company is not null)
 
             if (company is null)
             {
-                error = "Компания не найдена или нет доступа.";
+                if (!silent)
+                    error = "Компания не найдена или нет доступа.";
                 return;
             }
 
@@ -406,7 +447,8 @@ else if (company is not null)
         }
         catch (Exception ex)
         {
-            error = ex.Message;
+            if (!silent)
+                error = ex.Message;
         }
     }
 
@@ -420,6 +462,32 @@ else if (company is not null)
         }
     }
 
+    private async Task MarkAllRead()
+    {
+        error = null;
+        isBusy = true;
+        status = "Помечаем сообщения прочитанными...";
+
+        try
+        {
+            var userId = await GetUserId();
+            var changed = await CompanyService.MarkCompanyMessagesReadAsync(userId, CompanyId, CancellationToken.None);
+            status = changed == 0
+                ? "Непрочитанных сообщений не было."
+                : $"Прочитано сообщений: {changed}.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
     private async Task Sync()
     {
         error = null;
@@ -429,8 +497,9 @@ else if (company is not null)
         try
         {
             var userId = await GetUserId();
-            var loaded = await CompanyService.SyncCompanyAsync(userId, CompanyId, CancellationToken.None);
-            status = $"Синхронизация завершена. Новых сообщений: {loaded}.";
+            var companyId = CompanyId;
+            Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyAsync(userId, companyId));
+            status = "Синхронизация свежих сообщений запущена в фоне.";
             await Load();
         }
         catch (Exception ex)
@@ -460,8 +529,9 @@ else if (company is not null)
         try
         {
             var userId = await GetUserId();
-            var loaded = await CompanyService.SyncCompanyHistoryAsync(userId, CompanyId, CancellationToken.None);
-            status = $"История догружена. Новых сообщений: {loaded}.";
+            var companyId = CompanyId;
+            Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyHistoryAsync(userId, companyId));
+            status = "Догрузка истории запущена в фоне. Можно уйти со страницы — задача продолжится.";
             await Load();
         }
         catch (Exception ex)

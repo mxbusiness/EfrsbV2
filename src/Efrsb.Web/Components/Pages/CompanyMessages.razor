@@ -1,6 +1,7 @@
 @page "/companies/{CompanyId:guid}/messages"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
+@implements IDisposable
 @using System.Security.Claims
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
@@ -32,12 +33,20 @@ else if (company is not null)
             <a href="@($"/companies/{CompanyId}")" class="back-link">← К карточке компании</a>
             <h1>Все сообщения</h1>
             <div class="company-name">@DisplayCompanyName(company)</div>
+            <div class="message-actions">
+                <button class="btn btn-secondary" @onclick="MarkAllRead" disabled="@(isBusy || company.UnreadCount == 0)">Прочитать все</button>
+            </div>
             <div class="message-summary">
                 <span>Загружено: <strong>@Messages.Count</strong></span>
                 <span>Непрочитанные: <strong>@company.UnreadCount</strong></span>
                 <span>Всего service_rest: <strong>@company.TotalMessages</strong></span>
             </div>
         </section>
+
+        @if (!string.IsNullOrWhiteSpace(status))
+        {
+            <div class="alert alert-info">@status</div>
+        }
 
         <section class="panel">
             <div class="section-heading">
@@ -56,12 +65,23 @@ else if (company is not null)
     private TrackedCompanyDto? company;
     private IReadOnlyList<EfrsbMessageDto>? messages;
     private string? error;
+    private string? status;
+    private bool isBusy;
+    private CancellationTokenSource? refreshCts;
 
     private IReadOnlyList<EfrsbMessageDto> Messages => messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
 
     protected override async Task OnInitializedAsync()
     {
         await Load();
+        refreshCts = new CancellationTokenSource();
+        _ = RefreshLoop(refreshCts.Token);
+    }
+
+    public void Dispose()
+    {
+        refreshCts?.Cancel();
+        refreshCts?.Dispose();
     }
 
     private async Task<Guid> GetUserId()
@@ -74,9 +94,34 @@ else if (company is not null)
         return Guid.Parse(value);
     }
 
-    private async Task Load()
+    private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        error = null;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                await InvokeAsync(async () =>
+                {
+                    await Load(silent: true);
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Автообновление не должно ронять страницу.
+            }
+        }
+    }
+
+    private async Task Load(bool silent = false)
+    {
+        if (!silent)
+            error = null;
 
         try
         {
@@ -86,7 +131,8 @@ else if (company is not null)
 
             if (company is null)
             {
-                error = "Компания не найдена или нет доступа.";
+                if (!silent)
+                    error = "Компания не найдена или нет доступа.";
                 return;
             }
 
@@ -94,7 +140,34 @@ else if (company is not null)
         }
         catch (Exception ex)
         {
+            if (!silent)
+                error = ex.Message;
+        }
+    }
+
+    private async Task MarkAllRead()
+    {
+        error = null;
+        isBusy = true;
+        status = "Помечаем сообщения прочитанными...";
+
+        try
+        {
+            var userId = await GetUserId();
+            var changed = await CompanyService.MarkCompanyMessagesReadAsync(userId, CompanyId, CancellationToken.None);
+            status = changed == 0
+                ? "Непрочитанных сообщений не было."
+                : $"Прочитано сообщений: {changed}.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
             error = ex.Message;
+            status = null;
+        }
+        finally
+        {
+            isBusy = false;
         }
     }
 
@@ -339,6 +412,13 @@ else if (company is not null)
         overflow-wrap: anywhere;
     }
 
+    .message-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 12px;
+    }
+
     .message-summary {
         display: flex;
         flex-wrap: wrap;
@@ -463,5 +543,35 @@ else if (company is not null)
             align-items: flex-start;
             flex-direction: column;
         }
+    }
+
+    .btn {
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .btn:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+    }
+
+    .btn-secondary {
+        background: #334155;
+        color: #f8fafc;
+    }
+
+    .alert-info {
+        border: 1px solid #1d4ed8;
+        border-radius: 10px;
+        background: #0b1f4d;
+        color: #bfdbfe;
+        padding: 12px 14px;
     }
 </style>
