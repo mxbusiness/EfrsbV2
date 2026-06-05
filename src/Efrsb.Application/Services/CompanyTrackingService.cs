@@ -22,7 +22,7 @@ public interface IEfrsbDbContext
 
 public sealed class CompanyTrackingService : ICompanyTrackingService
 {
-    private const int PublicPublicationPageSize = 20;
+    private const int PublicPublicationPageSize = 1;
 
     private readonly IEfrsbDbContext _db;
     private readonly IFedresursClient _fedresurs;
@@ -185,6 +185,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
             company.LastSyncedAtUtc = DateTime.UtcNow;
             company.LoadedMessages = await CountLoadedMessagesAsync(company.Id, cancellationToken);
+            company.TotalMessages = Math.Max(company.TotalMessages, company.LoadedMessages);
 
             log.Success = true;
             log.MessagesLoaded = loaded;
@@ -266,6 +267,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
             company.LastSyncedAtUtc = DateTime.UtcNow;
             company.LoadedMessages = await CountLoadedMessagesAsync(company.Id, cancellationToken);
+            company.TotalMessages = company.LoadedMessages;
 
             log.Success = true;
             log.MessagesLoaded = totalLoaded;
@@ -850,7 +852,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             // Публичная карточка Федресурса дополняет service_rest, но не должна ломать синхронизацию.
         }
 
-        company.TotalMessages = total;
+        company.TotalMessages = Math.Max(company.TotalMessages, total);
         company.FirstMessageDate = firstDates.Count == 0 ? null : firstDates.Min();
         company.LastMessageDate = lastDates.Count == 0 ? null : lastDates.Max();
         company.LastMetadataSyncAtUtc = DateTime.UtcNow;
@@ -922,6 +924,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
         var loaded = await CountLoadedMessagesAsync(company.Id, cancellationToken);
         company.LoadedMessages = loaded;
+        var total = Math.Max(company.TotalMessages, loaded);
 
         return new TrackedCompanyDto(
             company.Id,
@@ -932,7 +935,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             company.BankruptGuid,
             unread,
             company.LastSyncedAtUtc,
-            company.TotalMessages,
+            total,
             loaded,
             company.FirstMessageDate,
             company.LastMessageDate,

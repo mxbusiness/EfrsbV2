@@ -263,11 +263,18 @@ public sealed class FedresursClient : IFedresursClient
         string? name,
         CancellationToken cancellationToken = default)
     {
-        var probes = new[] { inn, ogrn, name }
+        // Для одной организации публичный поиск fedresurs.ru может вернуть несколько карточек.
+        // Нельзя брать первый результат: в логах это давало карточки с 36/37 публикациями
+        // вместо основной карточки с полным списком. Поэтому пробуем ОГРН первым и
+        // среди точных совпадений выбираем карточку с самым большим числом публикаций.
+        var probes = new[] { ogrn, inn, name }
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => x!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        var allCandidates = new List<FedresursPublicCompanyItem>();
+        var knownGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var probe in probes)
         {
@@ -277,19 +284,20 @@ public sealed class FedresursClient : IFedresursClient
                 "https://fedresurs.ru/search/entity?code=" + Uri.EscapeDataString(probe),
                 cancellationToken) ?? new FedresursPublicCompanyResponse();
 
-            var exact = page.PageData.FirstOrDefault(x =>
-                (!string.IsNullOrWhiteSpace(inn) && string.Equals(x.Inn, inn, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrWhiteSpace(ogrn) && string.Equals(x.Ogrn, ogrn, StringComparison.OrdinalIgnoreCase)));
+            foreach (var item in page.PageData.Where(x => !string.IsNullOrWhiteSpace(x.Guid)))
+            {
+                if (knownGuids.Add(item.Guid))
+                    allCandidates.Add(item);
+            }
 
-            if (exact is not null && !string.IsNullOrWhiteSpace(exact.Guid))
-                return exact;
-
-            var first = page.PageData.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Guid));
-            if (first is not null)
-                return first;
         }
 
-        return null;
+        return await SelectBestPublicCompanyAsync(
+            allCandidates,
+            inn,
+            ogrn,
+            name,
+            cancellationToken);
     }
 
     public async Task<FedresursPublicPublicationResponse> GetPublicCompanyPublicationsAsync(
@@ -303,9 +311,9 @@ public sealed class FedresursClient : IFedresursClient
         if (string.IsNullOrWhiteSpace(publicCompanyGuid))
             return new FedresursPublicPublicationResponse();
 
-        // Публичный backend fedresurs.ru стабильно отвечает на небольшие страницы.
-        // Крупные страницы вроде limit=500 на сервере часто получают 451.
-        limit = Math.Clamp(limit, 1, 20);
+        // Для этого endpoint на части IP даже limit=20 получает 451.
+        // Limit=1 при тех же фильтрах стабильно работает, поэтому грузим публикации по одной.
+        limit = 1;
         offset = Math.Max(0, offset);
 
         var parts = new List<string>
@@ -390,6 +398,131 @@ public sealed class FedresursClient : IFedresursClient
         }
     }
 
+
+    private async Task<FedresursPublicCompanyItem?> SelectBestPublicCompanyAsync(
+        IReadOnlyList<FedresursPublicCompanyItem> source,
+        string? inn,
+        string? ogrn,
+        string? name,
+        CancellationToken cancellationToken)
+    {
+        var candidates = source
+            .Where(x => !string.IsNullOrWhiteSpace(x.Guid))
+            .ToList();
+
+        if (candidates.Count == 0)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(inn) && !string.IsNullOrWhiteSpace(ogrn))
+        {
+            var strict = candidates
+                .Where(x => Same(x.Inn, inn) && Same(x.Ogrn, ogrn))
+                .ToList();
+
+            if (strict.Count > 0)
+                candidates = strict;
+        }
+        else
+        {
+            var byIdentifier = candidates
+                .Where(x =>
+                    (!string.IsNullOrWhiteSpace(inn) && Same(x.Inn, inn)) ||
+                    (!string.IsNullOrWhiteSpace(ogrn) && Same(x.Ogrn, ogrn)))
+                .ToList();
+
+            if (byIdentifier.Count > 0)
+                candidates = byIdentifier;
+        }
+
+        FedresursPublicCompanyItem? best = null;
+        var bestScore = int.MinValue;
+        var bestCount = -1;
+
+        foreach (var candidate in candidates)
+        {
+            var publicationCount = await TryGetPublicPublicationCountAsync(
+                candidate.Guid,
+                cancellationToken);
+
+            var score = ScorePublicCompany(candidate, inn, ogrn, name) + Math.Min(publicationCount, 1000);
+
+            if (score > bestScore || (score == bestScore && publicationCount > bestCount))
+            {
+                best = candidate;
+                bestScore = score;
+                bestCount = publicationCount;
+            }
+        }
+
+        return best;
+    }
+
+    private async Task<int> TryGetPublicPublicationCountAsync(
+        string publicCompanyGuid,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page = await GetPublicCompanyPublicationsAsync(
+                publicCompanyGuid,
+                null,
+                null,
+                1,
+                0,
+                cancellationToken);
+
+            return page.Count;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int ScorePublicCompany(
+        FedresursPublicCompanyItem company,
+        string? inn,
+        string? ogrn,
+        string? name)
+    {
+        var score = 0;
+
+        if (!string.IsNullOrWhiteSpace(inn) && Same(company.Inn, inn))
+            score += 2000;
+
+        if (!string.IsNullOrWhiteSpace(ogrn) && Same(company.Ogrn, ogrn))
+            score += 3000;
+
+        if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(company.Name))
+        {
+            var left = NormalizeSearchText(company.Name);
+            var right = NormalizeSearchText(name);
+
+            if (left == right)
+                score += 500;
+            else if (left.Contains(right, StringComparison.OrdinalIgnoreCase) || right.Contains(left, StringComparison.OrdinalIgnoreCase))
+                score += 250;
+        }
+
+        return score;
+    }
+
+    private static bool Same(string? left, string? right)
+    {
+        return !string.IsNullOrWhiteSpace(left)
+            && !string.IsNullOrWhiteSpace(right)
+            && string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeSearchText(string value)
+    {
+        return value
+            .Replace("\"", string.Empty, StringComparison.Ordinal)
+            .Replace("'", string.Empty, StringComparison.Ordinal)
+            .Replace("ООО", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Trim();
+    }
 
     private static bool IsIgnorableFileArchiveStatus(HttpStatusCode statusCode)
     {
