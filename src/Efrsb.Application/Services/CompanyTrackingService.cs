@@ -22,6 +22,8 @@ public interface IEfrsbDbContext
 
 public sealed class CompanyTrackingService : ICompanyTrackingService
 {
+    private const int PublicPublicationPageSize = 20;
+
     private readonly IEfrsbDbContext _db;
     private readonly IFedresursClient _fedresurs;
     private readonly string _filesRoot;
@@ -552,23 +554,42 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         var loaded = 0;
         var offset = 0;
 
+        // Не используем startDate/endDate у публичного backend fedresurs.ru:
+        // на части серверов эти запросы возвращают 451. Берём страницы без дат
+        // и фильтруем период на нашей стороне.
         while (true)
         {
             var page = await _fedresurs.GetPublicCompanyPublicationsAsync(
                 publicCompany.Guid,
-                from,
-                to,
-                500,
+                null,
+                null,
+                PublicPublicationPageSize,
                 offset,
                 cancellationToken);
+
+            if (page.PageData.Count == 0)
+                break;
+
+            var periodItems = page.PageData
+                .Where(x =>
+                {
+                    var date = NormalizeFedresursDate(x.DatePublish);
+                    return date >= from && date <= to;
+                })
+                .ToList();
 
             loaded += await ProcessPublicPublicationPageAsync(
                 userId,
                 company,
-                page.PageData,
+                periodItems,
                 cancellationToken);
 
-            if (page.PageData.Count == 0 || offset + page.PageData.Count >= page.Count)
+            var oldestInPage = page.PageData
+                .Select(x => NormalizeFedresursDate(x.DatePublish))
+                .DefaultIfEmpty(DateTime.MaxValue)
+                .Min();
+
+            if (oldestInPage < from || offset + page.PageData.Count >= page.Count)
                 break;
 
             offset += page.PageData.Count;
@@ -586,43 +607,23 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         if (publicCompany is null)
             return 0;
 
-        var firstPage = await _fedresurs.GetPublicCompanyPublicationsAsync(
-            publicCompany.Guid,
-            null,
-            null,
-            500,
-            0,
-            cancellationToken);
+        var loaded = 0;
+        var offset = 0;
 
-        // Публичный backend Федресурса исторически отдает не более первых 500 записей.
-        // Для компаний с большим числом публикаций добираем историю через интервалы дат.
-        if (firstPage.Count > 500)
-        {
-            return await SyncPublicCompanyPublicationsByDateChunksAsync(
-                userId,
-                company,
-                publicCompany.Guid,
-                new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-                DateTime.UtcNow,
-                cancellationToken);
-        }
-
-        var loaded = await ProcessPublicPublicationPageAsync(
-            userId,
-            company,
-            firstPage.PageData,
-            cancellationToken);
-
-        var offset = firstPage.PageData.Count;
-        while (firstPage.PageData.Count > 0 && offset < firstPage.Count)
+        // Историю публичной карточки забираем обычной пагинацией без дат.
+        // Запросы с startDate/endDate и большие limit могут отдавать 451.
+        while (true)
         {
             var page = await _fedresurs.GetPublicCompanyPublicationsAsync(
                 publicCompany.Guid,
                 null,
                 null,
-                500,
+                PublicPublicationPageSize,
                 offset,
                 cancellationToken);
+
+            if (page.PageData.Count == 0)
+                break;
 
             loaded += await ProcessPublicPublicationPageAsync(
                 userId,
@@ -630,7 +631,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 page.PageData,
                 cancellationToken);
 
-            if (page.PageData.Count == 0)
+            if (offset + page.PageData.Count >= page.Count)
                 break;
 
             offset += page.PageData.Count;
@@ -663,7 +664,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     publicCompanyGuid,
                     cursor,
                     chunkTo,
-                    500,
+                    PublicPublicationPageSize,
                     offset,
                     cancellationToken);
 

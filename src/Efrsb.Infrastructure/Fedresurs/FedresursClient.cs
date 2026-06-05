@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Efrsb.Application.Abstractions;
@@ -154,7 +155,7 @@ public sealed class FedresursClient : IFedresursClient
             $"v1/messages/{Uri.EscapeDataString(guid)}/files/archive?onlySafe={onlySafe.ToString().ToLowerInvariant()}",
             cancellationToken);
 
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (IsIgnorableFileArchiveStatus(response.StatusCode))
             return Array.Empty<byte>();
 
         response.EnsureSuccessStatusCode();
@@ -248,7 +249,7 @@ public sealed class FedresursClient : IFedresursClient
             $"v1/reports/{Uri.EscapeDataString(guid)}/files/archive?onlySafe={onlySafe.ToString().ToLowerInvariant()}",
             cancellationToken);
 
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (IsIgnorableFileArchiveStatus(response.StatusCode))
             return Array.Empty<byte>();
 
         response.EnsureSuccessStatusCode();
@@ -302,7 +303,9 @@ public sealed class FedresursClient : IFedresursClient
         if (string.IsNullOrWhiteSpace(publicCompanyGuid))
             return new FedresursPublicPublicationResponse();
 
-        limit = Math.Clamp(limit, 1, 500);
+        // Публичный backend fedresurs.ru стабильно отвечает на небольшие страницы.
+        // Крупные страницы вроде limit=500 на сервере часто получают 451.
+        limit = Math.Clamp(limit, 1, 20);
         offset = Math.Max(0, offset);
 
         var parts = new List<string>
@@ -375,7 +378,7 @@ public sealed class FedresursClient : IFedresursClient
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            if (IsIgnorablePublicStatus(response.StatusCode))
                 return default;
 
             response.EnsureSuccessStatusCode();
@@ -385,6 +388,25 @@ public sealed class FedresursClient : IFedresursClient
         {
             _httpClient.DefaultRequestHeaders.Authorization = previousAuthorization;
         }
+    }
+
+
+    private static bool IsIgnorableFileArchiveStatus(HttpStatusCode statusCode)
+    {
+        return statusCode == HttpStatusCode.NotFound
+            || statusCode == HttpStatusCode.Forbidden
+            || statusCode == HttpStatusCode.Unauthorized
+            || statusCode == HttpStatusCode.TooManyRequests
+            || (int)statusCode == 451;
+    }
+
+    private static bool IsIgnorablePublicStatus(HttpStatusCode statusCode)
+    {
+        return statusCode == HttpStatusCode.NotFound
+            || statusCode == HttpStatusCode.Forbidden
+            || statusCode == HttpStatusCode.Unauthorized
+            || statusCode == HttpStatusCode.TooManyRequests
+            || (int)statusCode == 451;
     }
 
     private static string NormalizePublicDate(DateTime value, bool endOfDay)
