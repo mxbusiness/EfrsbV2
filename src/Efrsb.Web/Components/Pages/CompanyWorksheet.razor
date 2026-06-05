@@ -823,7 +823,7 @@
 
     private async Task EnsureWorksheetScript()
     {
-        const string script = """
+        const string script = @"
         if (!window.efrsbWorksheet2d) {
             window.efrsbWorksheet2d = {
                 init: function(containerId) {
@@ -873,8 +873,8 @@
                     function updateEdges() {
                         if (!svg) return;
                         svg.querySelectorAll('[data-ws-edge]').forEach(function(edge) {
-                            var from = canvas.querySelector('[data-ws-node-id="' + edge.getAttribute('data-from') + '"]');
-                            var to = canvas.querySelector('[data-ws-node-id="' + edge.getAttribute('data-to') + '"]');
+                            var from = canvas.querySelector('[data-ws-node-id=""' + edge.getAttribute('data-from') + '""]');
+                            var to = canvas.querySelector('[data-ws-node-id=""' + edge.getAttribute('data-to') + '""]');
                             if (!from || !to) return;
 
                             var a = cardCenter(from, 'right');
@@ -1034,7 +1034,7 @@
                 }
             };
         }
-        """;
+        ";
 
         if (!scriptReady)
         {
