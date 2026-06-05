@@ -1,11 +1,14 @@
 @page "/messages/{MessageId:guid}"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+
 @attribute [Authorize]
+
 @using System.Security.Claims
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Messages
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
+
 @inject ICompanyTrackingService CompanyService
 @inject AuthenticationStateProvider AuthState
 
@@ -30,14 +33,17 @@
                     <span>Номер</span>
                     <strong>@message.Number</strong>
                 </div>
+
                 <div class="summary-item">
                     <span>Дата</span>
                     <strong>@message.DatePublish.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</strong>
                 </div>
+
                 <div class="summary-item summary-wide">
                     <span>Тип</span>
                     <strong>@GetTypeTitle(message)</strong>
                 </div>
+
                 <div class="summary-item">
                     <span>Статус</span>
                     <strong>@(message.IsRead ? "Прочитано" : "Новое")</strong>
@@ -47,6 +53,7 @@
 
         <section class="panel">
             <h2>XML / содержимое</h2>
+
             @if (string.IsNullOrWhiteSpace(message.ContentXml))
             {
                 <p class="muted">Содержимое не загружено.</p>
@@ -59,6 +66,7 @@
 
         <section class="panel">
             <h2>Файлы</h2>
+
             @if (message.Files.Count == 0)
             {
                 <p class="muted">Файлов нет.</p>
@@ -91,6 +99,7 @@
         try
         {
             var userId = await GetUserId();
+
             message = await CompanyService.GetMessageDetailsAsync(
                 userId,
                 MessageId,
@@ -117,6 +126,7 @@
     {
         var auth = await AuthState.GetAuthenticationStateAsync();
         var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException("Пользователь не авторизован.");
 
@@ -224,7 +234,7 @@
         background: #450a0a;
     }
 
-    @media (max-width: 720px) {
+    @@media (max-width: 720px) {
         .summary-wide {
             grid-column: auto;
         }
