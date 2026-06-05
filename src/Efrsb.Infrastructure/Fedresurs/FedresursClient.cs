@@ -10,6 +10,8 @@ namespace Efrsb.Infrastructure.Fedresurs;
 
 public sealed class FedresursClient : IFedresursClient
 {
+    private const int MaxReasonablePublicCompanyPublications = 120;
+
     private readonly HttpClient _httpClient;
     private readonly FedresursOptions _options;
     private string? _jwt;
@@ -263,17 +265,20 @@ public sealed class FedresursClient : IFedresursClient
         string? name,
         CancellationToken cancellationToken = default)
     {
-        // Для одной организации публичный поиск fedresurs.ru может вернуть несколько карточек.
-        // Нельзя брать первый результат: в логах это давало карточки с 36/37 публикациями
-        // вместо основной карточки с полным списком. Поэтому пробуем ОГРН первым и
-        // среди точных совпадений выбираем карточку с самым большим числом публикаций.
-        var probes = new[] { ogrn, inn, name }
+        // Публичный поиск fedresurs.ru может вернуть несколько похожих карточек.
+        // Нельзя брать результат только по количеству публикаций: так можно попасть
+        // в чужую карточку и получить сотни публикаций вместо нужных 46.
+        // Поэтому ищем только по ИНН/ОГРН и выбираем только разумную карточку.
+        var probes = new[] { ogrn, inn }
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => x!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var allCandidates = new List<FedresursPublicCompanyItem>();
+        if (probes.Count == 0)
+            return null;
+
+        var candidates = new List<FedresursPublicCompanyItem>();
         var knownGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var probe in probes)
@@ -287,13 +292,12 @@ public sealed class FedresursClient : IFedresursClient
             foreach (var item in page.PageData.Where(x => !string.IsNullOrWhiteSpace(x.Guid)))
             {
                 if (knownGuids.Add(item.Guid))
-                    allCandidates.Add(item);
+                    candidates.Add(item);
             }
-
         }
 
         return await SelectBestPublicCompanyAsync(
-            allCandidates,
+            candidates,
             inn,
             ogrn,
             name,
@@ -413,21 +417,16 @@ public sealed class FedresursClient : IFedresursClient
         if (candidates.Count == 0)
             return null;
 
-        if (!string.IsNullOrWhiteSpace(inn) && !string.IsNullOrWhiteSpace(ogrn))
-        {
-            var strict = candidates
-                .Where(x => Same(x.Inn, inn) && Same(x.Ogrn, ogrn))
-                .ToList();
+        var exactBoth = candidates
+            .Where(x => Same(x.Inn, inn) && Same(x.Ogrn, ogrn))
+            .ToList();
 
-            if (strict.Count > 0)
-                candidates = strict;
-        }
+        if (exactBoth.Count > 0)
+            candidates = exactBoth;
         else
         {
             var byIdentifier = candidates
-                .Where(x =>
-                    (!string.IsNullOrWhiteSpace(inn) && Same(x.Inn, inn)) ||
-                    (!string.IsNullOrWhiteSpace(ogrn) && Same(x.Ogrn, ogrn)))
+                .Where(x => Same(x.Inn, inn) || Same(x.Ogrn, ogrn))
                 .ToList();
 
             if (byIdentifier.Count > 0)
@@ -444,7 +443,13 @@ public sealed class FedresursClient : IFedresursClient
                 candidate.Guid,
                 cancellationToken);
 
-            var score = ScorePublicCompany(candidate, inn, ogrn, name) + Math.Min(publicationCount, 1000);
+            // Защитный ограничитель. В текущем кейсе Федресурс показывает 46 публикаций.
+            // Карточки на 700+ публикаций — это не та организация, даже если поиск вернул
+            // их рядом с нужной по названию/коду.
+            if (publicationCount <= 0 || publicationCount > MaxReasonablePublicCompanyPublications)
+                continue;
+
+            var score = ScorePublicCompany(candidate, inn, ogrn, name);
 
             if (score > bestScore || (score == bestScore && publicationCount > bestCount))
             {

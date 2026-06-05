@@ -23,6 +23,7 @@ public interface IEfrsbDbContext
 public sealed class CompanyTrackingService : ICompanyTrackingService
 {
     private const int PublicPublicationPageSize = 1;
+    private const int MaxPublicPublicationCount = 120;
 
     private readonly IEfrsbDbContext _db;
     private readonly IFedresursClient _fedresurs;
@@ -572,6 +573,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             if (page.PageData.Count == 0)
                 break;
 
+            if (page.Count > MaxPublicPublicationCount)
+                break;
+
             var periodItems = page.PageData
                 .Where(x =>
                 {
@@ -592,6 +596,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 .Min();
 
             if (oldestInPage < from || offset + page.PageData.Count >= page.Count)
+                break;
+
+            if (offset + page.PageData.Count >= MaxPublicPublicationCount)
                 break;
 
             offset += page.PageData.Count;
@@ -627,6 +634,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             if (page.PageData.Count == 0)
                 break;
 
+            if (page.Count > MaxPublicPublicationCount)
+                break;
+
             loaded += await ProcessPublicPublicationPageAsync(
                 userId,
                 company,
@@ -634,6 +644,9 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 cancellationToken);
 
             if (offset + page.PageData.Count >= page.Count)
+                break;
+
+            if (offset + page.PageData.Count >= MaxPublicPublicationCount)
                 break;
 
             offset += page.PageData.Count;
@@ -811,46 +824,11 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
         var total = lastMessagesPage.Total + lastReportsPage.Total;
 
-        try
-        {
-            var publicCompany = await ResolvePublicCompanyAsync(company, cancellationToken);
-            if (publicCompany is not null)
-            {
-                var newestPublicPage = await _fedresurs.GetPublicCompanyPublicationsAsync(
-                    publicCompany.Guid,
-                    null,
-                    null,
-                    1,
-                    0,
-                    cancellationToken);
-
-                if (newestPublicPage.Count > 0)
-                {
-                    total = Math.Max(total, newestPublicPage.Count);
-
-                    var newestPublicDate = newestPublicPage.PageData.FirstOrDefault()?.DatePublish;
-                    if (newestPublicDate.HasValue)
-                        lastDates.Add(NormalizeFedresursDate(newestPublicDate.Value));
-
-                    var oldestPublicOffset = Math.Max(0, newestPublicPage.Count - 1);
-                    var oldestPublicPage = await _fedresurs.GetPublicCompanyPublicationsAsync(
-                        publicCompany.Guid,
-                        null,
-                        null,
-                        1,
-                        oldestPublicOffset,
-                        cancellationToken);
-
-                    var oldestPublicDate = oldestPublicPage.PageData.FirstOrDefault()?.DatePublish;
-                    if (oldestPublicDate.HasValue)
-                        firstDates.Add(NormalizeFedresursDate(oldestPublicDate.Value));
-                }
-            }
-        }
-        catch
-        {
-            // Публичная карточка Федресурса дополняет service_rest, но не должна ломать синхронизацию.
-        }
+        // Метаданные истории берём только из официального service_rest.
+        // Публичная карточка Федресурса используется ниже только для дозагрузки
+        // sfactmessages/ЕГРЮЛ-публикаций. Если использовать её count/oldest date
+        // на этапе metadata, ошибочно выбранная публичная карточка может увести
+        // историю в 2015 год и запустить огромную догрузку.
 
         company.TotalMessages = Math.Max(company.TotalMessages, total);
         company.FirstMessageDate = firstDates.Count == 0 ? null : firstDates.Min();
