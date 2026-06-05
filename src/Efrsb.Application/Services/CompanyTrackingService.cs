@@ -412,7 +412,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         var message = await _db.EfrsbMessages
             .Include(x => x.Files)
             .Include(x => x.UserStates)
-            .AsSplitQuery()
             .FirstOrDefaultAsync(
                 x => x.Id == messageId && x.TrackedCompany!.UserId == userId,
                 cancellationToken);

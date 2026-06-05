@@ -12,6 +12,60 @@ public sealed class FedresursPagedResponse<T>
     public List<T> PageData { get; set; } = new();
 }
 
+
+
+// Эти DTO больше не используются рабочей логикой. Они оставлены только как временная
+// совместимость, чтобы сборка не цеплялась за старые obj/bin после удаления публичного
+// backend fedresurs.ru. HTTP-запросы к публичному backend не выполняются.
+public sealed class FedresursPublicCompanyResponse
+{
+    public int Found { get; set; }
+    public int Total { get; set; }
+    public List<FedresursPublicCompanyItem> PageData { get; set; } = new();
+
+    [JsonIgnore]
+    public int Count => Found > 0 ? Found : Total;
+}
+
+public sealed class FedresursPublicCompanyItem
+{
+    public string Guid { get; set; } = string.Empty;
+    public string? Ogrn { get; set; }
+    public string? Inn { get; set; }
+    public string? Name { get; set; }
+    public string? EgrulAddress { get; set; }
+    public string? Status { get; set; }
+}
+
+public sealed class FedresursPublicPublicationResponse
+{
+    public int Found { get; set; }
+    public int Total { get; set; }
+    public List<FedresursPublicPublicationItem> PageData { get; set; } = new();
+
+    [JsonIgnore]
+    public int Count => Found > 0 ? Found : Total;
+}
+
+public sealed class FedresursPublicPublicationItem
+{
+    public string Guid { get; set; } = string.Empty;
+    public string Number { get; set; } = string.Empty;
+    public DateTime DatePublish { get; set; }
+    public string? Title { get; set; }
+    public string? Type { get; set; }
+    public bool? IsAnnuled { get; set; }
+    public bool? IsAnnulledRaw { get; set; }
+    public bool? IsLockedRaw { get; set; }
+    public bool? IsRefuted { get; set; }
+
+    [JsonIgnore]
+    public bool IsAnnulled => IsAnnuled == true || IsAnnulledRaw == true || IsRefuted == true;
+
+    [JsonIgnore]
+    public bool IsLocked => IsLockedRaw == true;
+}
+
 public sealed class FedresursMessageItem
 {
     public string Guid { get; set; } = string.Empty;

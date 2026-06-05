@@ -241,6 +241,27 @@ public sealed class FedresursClient : IFedresursClient
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
+
+    public Task<FedresursPublicCompanyItem?> FindPublicCompanyAsync(
+        string? inn,
+        string? ogrn,
+        string? name,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<FedresursPublicCompanyItem?>(null);
+    }
+
+    public Task<FedresursPublicPublicationResponse> GetPublicCompanyPublicationsAsync(
+        string publicCompanyGuid,
+        DateTime? dateFrom = null,
+        DateTime? dateTo = null,
+        int limit = 500,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new FedresursPublicPublicationResponse());
+    }
+
     private async Task<HttpResponseMessage> GetAsync(
         string url,
         CancellationToken cancellationToken)
