@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Efrsb.Contracts.Fedresurs;
@@ -28,7 +27,6 @@ public sealed class FedresursMessageItem
     public FedresursBankruptItem? BankruptInfo { get; set; }
 }
 
-
 public sealed class FedresursReportItem
 {
     public string Guid { get; set; } = string.Empty;
@@ -43,106 +41,6 @@ public sealed class FedresursReportItem
     public FedresursBankruptItem? BankruptInfo { get; set; }
 }
 
-
-public sealed class FedresursPublicCompanyResponse
-{
-    [JsonPropertyName("found")]
-    public int Found { get; set; }
-
-    [JsonPropertyName("total")]
-    public int Total { get; set; }
-
-    [JsonPropertyName("pageData")]
-    public List<FedresursPublicCompanyItem> PageData { get; set; } = new();
-
-    [JsonIgnore]
-    public int Count => Found > 0 ? Found : Total;
-}
-
-public sealed class FedresursPublicCompanyItem
-{
-    [JsonPropertyName("guid")]
-    public string Guid { get; set; } = string.Empty;
-
-    [JsonPropertyName("ogrn")]
-    public string? Ogrn { get; set; }
-
-    [JsonPropertyName("inn")]
-    public string? Inn { get; set; }
-
-    [JsonPropertyName("name")]
-    public string? Name { get; set; }
-
-    [JsonPropertyName("egrulAddress")]
-    public string? EgrulAddress { get; set; }
-
-    [JsonPropertyName("status")]
-    public string? Status { get; set; }
-}
-
-public sealed class FedresursPublicPublicationResponse
-{
-    [JsonPropertyName("found")]
-    public int Found { get; set; }
-
-    [JsonPropertyName("total")]
-    public int Total { get; set; }
-
-    [JsonPropertyName("pageData")]
-    public List<FedresursPublicPublicationItem> PageData { get; set; } = new();
-
-    [JsonIgnore]
-    public int Count => Found > 0 ? Found : Total;
-}
-
-public sealed class FedresursPublicPublicationItem
-{
-    [JsonPropertyName("guid")]
-    public string Guid { get; set; } = string.Empty;
-
-    [JsonPropertyName("number")]
-    public string Number { get; set; } = string.Empty;
-
-    [JsonPropertyName("datePublish")]
-    public DateTime DatePublish { get; set; }
-
-    [JsonPropertyName("title")]
-    public string? Title { get; set; }
-
-    [JsonPropertyName("type")]
-    public string? Type { get; set; }
-
-    [JsonPropertyName("publisherName")]
-    public string? PublisherName { get; set; }
-
-    [JsonPropertyName("publisherType")]
-    public string? PublisherType { get; set; }
-
-    [JsonPropertyName("bankruptName")]
-    public string? BankruptName { get; set; }
-
-    [JsonPropertyName("participants")]
-    public JsonElement? Participants { get; set; }
-
-    [JsonPropertyName("isAnnuled")]
-    public bool? IsAnnuled { get; set; }
-
-    [JsonPropertyName("isAnnulled")]
-    public bool? IsAnnulledRaw { get; set; }
-
-    [JsonPropertyName("isLocked")]
-    public bool? IsLockedRaw { get; set; }
-
-    [JsonPropertyName("isRefuted")]
-    public bool? IsRefuted { get; set; }
-
-    [JsonIgnore]
-    public bool IsAnnulled => IsAnnuled == true || IsAnnulledRaw == true || IsRefuted == true;
-
-    [JsonIgnore]
-    public bool IsLocked => IsLockedRaw == true;
-}
-
 public sealed class FedresursBankruptItem
 {
     [JsonPropertyName("guid")]
@@ -151,9 +49,10 @@ public sealed class FedresursBankruptItem
     [JsonPropertyName("type")]
     public string? Type { get; set; }
 
+    [JsonPropertyName("dateLastModif")]
+    public DateTime? DateLastModif { get; set; }
+
     // REST API ЕФРСБ возвращает идентификационные данные должника во вложенном объекте data.
-    // Старый код ожидал flat-поля name/inn/ogrn, из-за этого после добавления компании
-    // в карточке оставались пустыми ИНН, ОГРН и название.
     [JsonPropertyName("data")]
     public FedresursBankruptData? Data { get; set; }
 
@@ -167,7 +66,7 @@ public sealed class FedresursBankruptItem
     public string? RawOgrn { get; set; }
 
     [JsonIgnore]
-    public string? Name => FirstNotEmpty(Data?.Name, RawName, BuildPersonName());
+    public string? Name => FirstNotEmpty(Data?.Name, Data?.ShortName, Data?.FullName, RawName, BuildPersonName());
 
     [JsonIgnore]
     public string? Inn => FirstNotEmpty(Data?.Inn, RawInn);
@@ -204,6 +103,12 @@ public sealed class FedresursBankruptData
 {
     [JsonPropertyName("name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("shortName")]
+    public string? ShortName { get; set; }
+
+    [JsonPropertyName("fullName")]
+    public string? FullName { get; set; }
 
     [JsonPropertyName("ogrn")]
     public string? Ogrn { get; set; }

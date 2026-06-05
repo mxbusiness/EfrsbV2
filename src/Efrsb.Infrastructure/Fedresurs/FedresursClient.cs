@@ -10,12 +10,15 @@ namespace Efrsb.Infrastructure.Fedresurs;
 
 public sealed class FedresursClient : IFedresursClient
 {
-    private const int MaxReasonablePublicCompanyPublications = 120;
+    private static readonly TimeSpan RequestInterval = TimeSpan.FromMilliseconds(160);
 
     private readonly HttpClient _httpClient;
     private readonly FedresursOptions _options;
+    private readonly SemaphoreSlim _requestGate = new(1, 1);
+
     private string? _jwt;
     private DateTime _jwtExpiresAtUtc;
+    private DateTime _lastRequestUtc = DateTime.MinValue;
 
     public FedresursClient(
         HttpClient httpClient,
@@ -30,8 +33,6 @@ public sealed class FedresursClient : IFedresursClient
         string query,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
         var normalized = query.Trim();
         if (string.IsNullOrWhiteSpace(normalized))
             return new FedresursPagedResponse<FedresursBankruptItem>();
@@ -54,8 +55,6 @@ public sealed class FedresursClient : IFedresursClient
         }
         else if (Guid.TryParse(normalized, out _))
         {
-            // Карточка в этом сервисе предназначена для юридических лиц.
-            // Указываем type=Company и при поиске по GUID, чтобы ЕФРСБ вернул data компании.
             parts.Add("type=Company");
             parts.Add($"guid={Uri.EscapeDataString(normalized)}");
         }
@@ -78,8 +77,6 @@ public sealed class FedresursClient : IFedresursClient
         int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
         limit = Math.Clamp(limit, 1, 1000);
         offset = Math.Clamp(offset, 0, 1_000_000);
 
@@ -110,8 +107,6 @@ public sealed class FedresursClient : IFedresursClient
         string sort,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
         var parts = new List<string>
         {
             $"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}",
@@ -131,13 +126,11 @@ public sealed class FedresursClient : IFedresursClient
         string guid,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
-        var response = await _httpClient.GetAsync(
+        var response = await GetAsync(
             $"v1/messages/{Uri.EscapeDataString(guid)}",
             cancellationToken);
 
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
         response.EnsureSuccessStatusCode();
@@ -151,9 +144,7 @@ public sealed class FedresursClient : IFedresursClient
         bool onlySafe = true,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
-        var response = await _httpClient.GetAsync(
+        var response = await GetAsync(
             $"v1/messages/{Uri.EscapeDataString(guid)}/files/archive?onlySafe={onlySafe.ToString().ToLowerInvariant()}",
             cancellationToken);
 
@@ -172,8 +163,6 @@ public sealed class FedresursClient : IFedresursClient
         int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
         limit = Math.Clamp(limit, 1, 1000);
         offset = Math.Clamp(offset, 0, 1_000_000);
 
@@ -204,8 +193,6 @@ public sealed class FedresursClient : IFedresursClient
         string sort,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
         var parts = new List<string>
         {
             $"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}",
@@ -225,13 +212,11 @@ public sealed class FedresursClient : IFedresursClient
         string guid,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
-        var response = await _httpClient.GetAsync(
+        var response = await GetAsync(
             $"v1/reports/{Uri.EscapeDataString(guid)}",
             cancellationToken);
 
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
         response.EnsureSuccessStatusCode();
@@ -245,9 +230,7 @@ public sealed class FedresursClient : IFedresursClient
         bool onlySafe = true,
         CancellationToken cancellationToken = default)
     {
-        await EnsureAuthorizedAsync(cancellationToken);
-
-        var response = await _httpClient.GetAsync(
+        var response = await GetAsync(
             $"v1/reports/{Uri.EscapeDataString(guid)}/files/archive?onlySafe={onlySafe.ToString().ToLowerInvariant()}",
             cancellationToken);
 
@@ -258,94 +241,24 @@ public sealed class FedresursClient : IFedresursClient
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
-
-    public async Task<FedresursPublicCompanyItem?> FindPublicCompanyAsync(
-        string? inn,
-        string? ogrn,
-        string? name,
-        CancellationToken cancellationToken = default)
+    private async Task<HttpResponseMessage> GetAsync(
+        string url,
+        CancellationToken cancellationToken)
     {
-        // Публичный поиск fedresurs.ru может вернуть несколько похожих карточек.
-        // Нельзя брать результат только по количеству публикаций: так можно попасть
-        // в чужую карточку и получить сотни публикаций вместо нужных 46.
-        // Поэтому ищем только по ИНН/ОГРН и выбираем только разумную карточку.
-        var probes = new[] { ogrn, inn }
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Select(x => x!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (probes.Count == 0)
-            return null;
-
-        var candidates = new List<FedresursPublicCompanyItem>();
-        var knownGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var probe in probes)
-        {
-            var url = "https://fedresurs.ru/backend/companies?limit=15&offset=0&code=" + Uri.EscapeDataString(probe);
-            var page = await GetPublicJsonAsync<FedresursPublicCompanyResponse>(
-                url,
-                "https://fedresurs.ru/search/entity?code=" + Uri.EscapeDataString(probe),
-                cancellationToken) ?? new FedresursPublicCompanyResponse();
-
-            foreach (var item in page.PageData.Where(x => !string.IsNullOrWhiteSpace(x.Guid)))
-            {
-                if (knownGuids.Add(item.Guid))
-                    candidates.Add(item);
-            }
-        }
-
-        return await SelectBestPublicCompanyAsync(
-            candidates,
-            inn,
-            ogrn,
-            name,
-            cancellationToken);
+        await EnsureAuthorizedAsync(cancellationToken);
+        await ThrottleAsync(cancellationToken);
+        return await _httpClient.GetAsync(url, cancellationToken);
     }
 
-    public async Task<FedresursPublicPublicationResponse> GetPublicCompanyPublicationsAsync(
-        string publicCompanyGuid,
-        DateTime? dateFrom = null,
-        DateTime? dateTo = null,
-        int limit = 500,
-        int offset = 0,
-        CancellationToken cancellationToken = default)
+    private async Task<T?> GetJsonAsync<T>(
+        string url,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(publicCompanyGuid))
-            return new FedresursPublicPublicationResponse();
+        using var response = await GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
 
-        // Для этого endpoint на части IP даже limit=20 получает 451.
-        // Limit=1 при тех же фильтрах стабильно работает, поэтому грузим публикации по одной.
-        limit = 1;
-        offset = Math.Max(0, offset);
-
-        var parts = new List<string>
-        {
-            $"limit={limit}",
-            $"offset={offset}",
-            "searchCompanyEfrsb=true",
-            "searchAmReport=true",
-            "searchFirmBankruptMessage=true",
-            "searchFirmBankruptMessageWithoutLegalCase=false",
-            "searchSfactsMessage=true",
-            "searchSroAmMessage=true",
-            "searchTradeOrgMessage=true"
-        };
-
-        if (dateFrom.HasValue && dateTo.HasValue)
-        {
-            parts.Add("startDate=" + Uri.EscapeDataString(NormalizePublicDate(dateFrom.Value, false)));
-            parts.Add("endDate=" + Uri.EscapeDataString(NormalizePublicDate(dateTo.Value, true)));
-        }
-
-        var url = $"https://fedresurs.ru/backend/companies/{Uri.EscapeDataString(publicCompanyGuid)}/publications?" + string.Join('&', parts);
-        var referer = $"https://fedresurs.ru/companies/{Uri.EscapeDataString(publicCompanyGuid)}/publications";
-
-        return await GetPublicJsonAsync<FedresursPublicPublicationResponse>(
-            url,
-            referer,
-            cancellationToken) ?? new FedresursPublicPublicationResponse();
+        return await response.Content.ReadFromJsonAsync<T>(
+            cancellationToken: cancellationToken);
     }
 
     private async Task EnsureAuthorizedAsync(CancellationToken cancellationToken)
@@ -355,6 +268,8 @@ public sealed class FedresursClient : IFedresursClient
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _jwt);
             return;
         }
+
+        await ThrottleAsync(cancellationToken);
 
         var response = await _httpClient.PostAsJsonAsync(
             "v1/auth",
@@ -372,161 +287,23 @@ public sealed class FedresursClient : IFedresursClient
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _jwt);
     }
 
-
-    private async Task<T?> GetPublicJsonAsync<T>(
-        string url,
-        string referer,
-        CancellationToken cancellationToken)
+    private async Task ThrottleAsync(CancellationToken cancellationToken)
     {
-        var previousAuthorization = _httpClient.DefaultRequestHeaders.Authorization;
-        _httpClient.DefaultRequestHeaders.Authorization = null;
-
+        await _requestGate.WaitAsync(cancellationToken);
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Referrer = new Uri(referer);
-            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36");
-            request.Headers.AcceptLanguage.ParseAdd("ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7");
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            var elapsed = DateTime.UtcNow - _lastRequestUtc;
+            var delay = RequestInterval - elapsed;
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (IsIgnorablePublicStatus(response.StatusCode))
-                return default;
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, cancellationToken);
 
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
+            _lastRequestUtc = DateTime.UtcNow;
         }
         finally
         {
-            _httpClient.DefaultRequestHeaders.Authorization = previousAuthorization;
+            _requestGate.Release();
         }
-    }
-
-
-    private async Task<FedresursPublicCompanyItem?> SelectBestPublicCompanyAsync(
-        IReadOnlyList<FedresursPublicCompanyItem> source,
-        string? inn,
-        string? ogrn,
-        string? name,
-        CancellationToken cancellationToken)
-    {
-        var candidates = source
-            .Where(x => !string.IsNullOrWhiteSpace(x.Guid))
-            .ToList();
-
-        if (candidates.Count == 0)
-            return null;
-
-        var exactBoth = candidates
-            .Where(x => Same(x.Inn, inn) && Same(x.Ogrn, ogrn))
-            .ToList();
-
-        if (exactBoth.Count > 0)
-            candidates = exactBoth;
-        else
-        {
-            var byIdentifier = candidates
-                .Where(x => Same(x.Inn, inn) || Same(x.Ogrn, ogrn))
-                .ToList();
-
-            if (byIdentifier.Count > 0)
-                candidates = byIdentifier;
-        }
-
-        FedresursPublicCompanyItem? best = null;
-        var bestScore = int.MinValue;
-        var bestCount = -1;
-
-        foreach (var candidate in candidates)
-        {
-            var publicationCount = await TryGetPublicPublicationCountAsync(
-                candidate.Guid,
-                cancellationToken);
-
-            // Защитный ограничитель. В текущем кейсе Федресурс показывает 46 публикаций.
-            // Карточки на 700+ публикаций — это не та организация, даже если поиск вернул
-            // их рядом с нужной по названию/коду.
-            if (publicationCount <= 0 || publicationCount > MaxReasonablePublicCompanyPublications)
-                continue;
-
-            var score = ScorePublicCompany(candidate, inn, ogrn, name);
-
-            if (score > bestScore || (score == bestScore && publicationCount > bestCount))
-            {
-                best = candidate;
-                bestScore = score;
-                bestCount = publicationCount;
-            }
-        }
-
-        return best;
-    }
-
-    private async Task<int> TryGetPublicPublicationCountAsync(
-        string publicCompanyGuid,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var page = await GetPublicCompanyPublicationsAsync(
-                publicCompanyGuid,
-                null,
-                null,
-                1,
-                0,
-                cancellationToken);
-
-            return page.Count;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private static int ScorePublicCompany(
-        FedresursPublicCompanyItem company,
-        string? inn,
-        string? ogrn,
-        string? name)
-    {
-        var score = 0;
-
-        if (!string.IsNullOrWhiteSpace(inn) && Same(company.Inn, inn))
-            score += 2000;
-
-        if (!string.IsNullOrWhiteSpace(ogrn) && Same(company.Ogrn, ogrn))
-            score += 3000;
-
-        if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(company.Name))
-        {
-            var left = NormalizeSearchText(company.Name);
-            var right = NormalizeSearchText(name);
-
-            if (left == right)
-                score += 500;
-            else if (left.Contains(right, StringComparison.OrdinalIgnoreCase) || right.Contains(left, StringComparison.OrdinalIgnoreCase))
-                score += 250;
-        }
-
-        return score;
-    }
-
-    private static bool Same(string? left, string? right)
-    {
-        return !string.IsNullOrWhiteSpace(left)
-            && !string.IsNullOrWhiteSpace(right)
-            && string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeSearchText(string value)
-    {
-        return value
-            .Replace("\"", string.Empty, StringComparison.Ordinal)
-            .Replace("'", string.Empty, StringComparison.Ordinal)
-            .Replace("ООО", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace("ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Trim();
     }
 
     private static bool IsIgnorableFileArchiveStatus(HttpStatusCode statusCode)
@@ -536,42 +313,5 @@ public sealed class FedresursClient : IFedresursClient
             || statusCode == HttpStatusCode.Unauthorized
             || statusCode == HttpStatusCode.TooManyRequests
             || (int)statusCode == 451;
-    }
-
-    private static bool IsIgnorablePublicStatus(HttpStatusCode statusCode)
-    {
-        return statusCode == HttpStatusCode.NotFound
-            || statusCode == HttpStatusCode.Forbidden
-            || statusCode == HttpStatusCode.Unauthorized
-            || statusCode == HttpStatusCode.TooManyRequests
-            || (int)statusCode == 451;
-    }
-
-    private static string NormalizePublicDate(DateTime value, bool endOfDay)
-    {
-        var utc = value.Kind switch
-        {
-            DateTimeKind.Utc => value,
-            DateTimeKind.Local => value.ToUniversalTime(),
-            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
-        };
-
-        if (endOfDay)
-            utc = utc.Date.AddDays(1).AddMilliseconds(-1);
-        else
-            utc = utc.Date;
-
-        return utc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-    }
-
-    private async Task<T?> GetJsonAsync<T>(
-        string url,
-        CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.GetAsync(url, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        return await response.Content.ReadFromJsonAsync<T>(
-            cancellationToken: cancellationToken);
     }
 }

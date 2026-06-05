@@ -1,6 +1,4 @@
 using System.IO.Compression;
-using System.Text.Json;
-using System.Xml.Linq;
 using Efrsb.Application.Abstractions;
 using Efrsb.Contracts.Companies;
 using Efrsb.Contracts.Fedresurs;
@@ -22,12 +20,10 @@ public interface IEfrsbDbContext
 
 public sealed class CompanyTrackingService : ICompanyTrackingService
 {
-    private const int PublicPublicationPageSize = 1;
-    private const int MaxPublicPublicationCount = 120;
-
     private readonly IEfrsbDbContext _db;
     private readonly IFedresursClient _fedresurs;
     private readonly string _filesRoot;
+    private readonly SemaphoreSlim _operationLock = new(1, 1);
 
     public CompanyTrackingService(
         IEfrsbDbContext db,
@@ -43,7 +39,116 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         Directory.CreateDirectory(_filesRoot);
     }
 
-    public async Task<TrackedCompanyDto> AddCompanyAsync(
+    public Task<TrackedCompanyDto> AddCompanyAsync(
+        Guid userId,
+        string query,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => AddCompanyCoreAsync(userId, query, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task DeleteCompanyAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => DeleteCompanyCoreAsync(userId, trackedCompanyId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<IReadOnlyList<TrackedCompanyDto>> GetCompaniesAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => GetCompaniesCoreAsync(userId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<int> SyncCompanyAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => SyncCompanyCoreAsync(userId, trackedCompanyId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<int> SyncCompanyHistoryAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => SyncCompanyHistoryCoreAsync(userId, trackedCompanyId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<IReadOnlyList<EfrsbMessageDto>> GetMessagesAsync(
+        Guid userId,
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => GetMessagesCoreAsync(userId, trackedCompanyId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<EfrsbMessageDetailsDto?> GetMessageDetailsAsync(
+        Guid userId,
+        Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => GetMessageDetailsCoreAsync(userId, messageId, cancellationToken),
+            cancellationToken);
+    }
+
+    public Task MarkMessageReadAsync(
+        Guid userId,
+        Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        return RunSerializedAsync(
+            () => MarkMessageReadCoreAsync(userId, messageId, cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<T> RunSerializedAsync<T>(
+        Func<Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        await _operationLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    private async Task RunSerializedAsync(
+        Func<Task> action,
+        CancellationToken cancellationToken)
+    {
+        await _operationLock.WaitAsync(cancellationToken);
+        try
+        {
+            await action();
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    private async Task<TrackedCompanyDto> AddCompanyCoreAsync(
         Guid userId,
         string query,
         CancellationToken cancellationToken = default)
@@ -86,7 +191,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         return await ToDtoAsync(entity, userId, cancellationToken);
     }
 
-    public async Task DeleteCompanyAsync(
+    private async Task DeleteCompanyCoreAsync(
         Guid userId,
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
@@ -129,7 +234,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<TrackedCompanyDto>> GetCompaniesAsync(
+    private async Task<IReadOnlyList<TrackedCompanyDto>> GetCompaniesCoreAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
     {
@@ -138,13 +243,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
-        var identityUpdated = false;
-        foreach (var company in companies)
-            identityUpdated |= await TryRefreshCompanyIdentityAsync(company, cancellationToken);
-
-        if (identityUpdated)
-            await _db.SaveChangesAsync(cancellationToken);
-
         var result = new List<TrackedCompanyDto>();
         foreach (var company in companies)
             result.Add(await ToDtoAsync(company, userId, cancellationToken));
@@ -152,7 +250,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         return result;
     }
 
-    public async Task<int> SyncCompanyAsync(
+    private async Task<int> SyncCompanyCoreAsync(
         Guid userId,
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
@@ -172,6 +270,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         try
         {
             await TryRefreshCompanyIdentityAsync(company, cancellationToken);
+            await RemoveNonServiceRestMessagesAsync(company.Id, cancellationToken);
             await RefreshMetadataAsync(company, cancellationToken);
 
             var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
@@ -205,7 +304,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
     }
 
-    public async Task<int> SyncCompanyHistoryAsync(
+    private async Task<int> SyncCompanyHistoryCoreAsync(
         Guid userId,
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
@@ -225,6 +324,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         try
         {
             await TryRefreshCompanyIdentityAsync(company, cancellationToken);
+            await RemoveNonServiceRestMessagesAsync(company.Id, cancellationToken);
             await RefreshMetadataAsync(company, cancellationToken);
 
             var totalLoaded = 0;
@@ -258,14 +358,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 }
             }
 
-            // Публичная карточка fedresurs.ru содержит не только bankruptmessages/reports,
-            // но и sfactmessages/ЕГРЮЛ-сообщения. Они могут быть старше первой
-            // банкротной публикации, поэтому для истории грузим весь публичный список отдельно.
-            totalLoaded += await SyncPublicCompanyPublicationsFullAsync(
-                userId,
-                company,
-                cancellationToken);
-
             company.LastSyncedAtUtc = DateTime.UtcNow;
             company.LoadedMessages = await CountLoadedMessagesAsync(company.Id, cancellationToken);
             company.TotalMessages = company.LoadedMessages;
@@ -287,7 +379,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
     }
 
-    public async Task<IReadOnlyList<EfrsbMessageDto>> GetMessagesAsync(
+    private async Task<IReadOnlyList<EfrsbMessageDto>> GetMessagesCoreAsync(
         Guid userId,
         Guid trackedCompanyId,
         CancellationToken cancellationToken = default)
@@ -312,7 +404,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<EfrsbMessageDetailsDto?> GetMessageDetailsAsync(
+    private async Task<EfrsbMessageDetailsDto?> GetMessageDetailsCoreAsync(
         Guid userId,
         Guid messageId,
         CancellationToken cancellationToken = default)
@@ -320,6 +412,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         var message = await _db.EfrsbMessages
             .Include(x => x.Files)
             .Include(x => x.UserStates)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(
                 x => x.Id == messageId && x.TrackedCompany!.UserId == userId,
                 cancellationToken);
@@ -347,7 +440,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             message.CourtDecisionType);
     }
 
-    public async Task MarkMessageReadAsync(
+    private async Task MarkMessageReadCoreAsync(
         Guid userId,
         Guid messageId,
         CancellationToken cancellationToken = default)
@@ -376,6 +469,37 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task RemoveNonServiceRestMessagesAsync(
+        Guid trackedCompanyId,
+        CancellationToken cancellationToken)
+    {
+        var publicMessageIds = await _db.EfrsbMessages
+            .Where(x => x.TrackedCompanyId == trackedCompanyId && x.Type.StartsWith("Public:"))
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        if (publicMessageIds.Count == 0)
+            return;
+
+        var states = await _db.UserMessageStates
+            .Where(x => publicMessageIds.Contains(x.EfrsbMessageId))
+            .ToListAsync(cancellationToken);
+
+        var files = await _db.EfrsbMessageFiles
+            .Where(x => publicMessageIds.Contains(x.EfrsbMessageId))
+            .ToListAsync(cancellationToken);
+
+        var messages = await _db.EfrsbMessages
+            .Where(x => publicMessageIds.Contains(x.Id))
+            .ToListAsync(cancellationToken);
+
+        _db.UserMessageStates.RemoveRange(states);
+        _db.EfrsbMessageFiles.RemoveRange(files);
+        _db.EfrsbMessages.RemoveRange(messages);
+
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
     private async Task<int> SyncPublicationsRangeAsync(
         Guid userId,
         TrackedCompany company,
@@ -386,7 +510,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         var loaded = 0;
         loaded += await SyncMessagesRangeAsync(userId, company, from, to, cancellationToken);
         loaded += await SyncReportsRangeAsync(userId, company, from, to, cancellationToken);
-        loaded += await SyncPublicCompanyPublicationsRangeAsync(userId, company, from, to, cancellationToken);
         return loaded;
     }
 
@@ -543,240 +666,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     }
 
 
-    private async Task<int> SyncPublicCompanyPublicationsRangeAsync(
-        Guid userId,
-        TrackedCompany company,
-        DateTime from,
-        DateTime to,
-        CancellationToken cancellationToken)
-    {
-        var publicCompany = await ResolvePublicCompanyAsync(company, cancellationToken);
-        if (publicCompany is null)
-            return 0;
-
-        var loaded = 0;
-        var offset = 0;
-
-        // Не используем startDate/endDate у публичного backend fedresurs.ru:
-        // на части серверов эти запросы возвращают 451. Берём страницы без дат
-        // и фильтруем период на нашей стороне.
-        while (true)
-        {
-            var page = await _fedresurs.GetPublicCompanyPublicationsAsync(
-                publicCompany.Guid,
-                null,
-                null,
-                PublicPublicationPageSize,
-                offset,
-                cancellationToken);
-
-            if (page.PageData.Count == 0)
-                break;
-
-            if (page.Count > MaxPublicPublicationCount)
-                break;
-
-            var periodItems = page.PageData
-                .Where(x =>
-                {
-                    var date = NormalizeFedresursDate(x.DatePublish);
-                    return date >= from && date <= to;
-                })
-                .ToList();
-
-            loaded += await ProcessPublicPublicationPageAsync(
-                userId,
-                company,
-                periodItems,
-                cancellationToken);
-
-            var oldestInPage = page.PageData
-                .Select(x => NormalizeFedresursDate(x.DatePublish))
-                .DefaultIfEmpty(DateTime.MaxValue)
-                .Min();
-
-            if (oldestInPage < from || offset + page.PageData.Count >= page.Count)
-                break;
-
-            if (offset + page.PageData.Count >= MaxPublicPublicationCount)
-                break;
-
-            offset += page.PageData.Count;
-        }
-
-        return loaded;
-    }
-
-    private async Task<int> SyncPublicCompanyPublicationsFullAsync(
-        Guid userId,
-        TrackedCompany company,
-        CancellationToken cancellationToken)
-    {
-        var publicCompany = await ResolvePublicCompanyAsync(company, cancellationToken);
-        if (publicCompany is null)
-            return 0;
-
-        var loaded = 0;
-        var offset = 0;
-
-        // Историю публичной карточки забираем обычной пагинацией без дат.
-        // Запросы с startDate/endDate и большие limit могут отдавать 451.
-        while (true)
-        {
-            var page = await _fedresurs.GetPublicCompanyPublicationsAsync(
-                publicCompany.Guid,
-                null,
-                null,
-                PublicPublicationPageSize,
-                offset,
-                cancellationToken);
-
-            if (page.PageData.Count == 0)
-                break;
-
-            if (page.Count > MaxPublicPublicationCount)
-                break;
-
-            loaded += await ProcessPublicPublicationPageAsync(
-                userId,
-                company,
-                page.PageData,
-                cancellationToken);
-
-            if (offset + page.PageData.Count >= page.Count)
-                break;
-
-            if (offset + page.PageData.Count >= MaxPublicPublicationCount)
-                break;
-
-            offset += page.PageData.Count;
-        }
-
-        return loaded;
-    }
-
-    private async Task<int> SyncPublicCompanyPublicationsByDateChunksAsync(
-        Guid userId,
-        TrackedCompany company,
-        string publicCompanyGuid,
-        DateTime from,
-        DateTime to,
-        CancellationToken cancellationToken)
-    {
-        var loaded = 0;
-        var cursor = from;
-
-        while (cursor < to)
-        {
-            var chunkTo = cursor.AddDays(31);
-            if (chunkTo > to)
-                chunkTo = to;
-
-            var offset = 0;
-            while (true)
-            {
-                var page = await _fedresurs.GetPublicCompanyPublicationsAsync(
-                    publicCompanyGuid,
-                    cursor,
-                    chunkTo,
-                    PublicPublicationPageSize,
-                    offset,
-                    cancellationToken);
-
-                loaded += await ProcessPublicPublicationPageAsync(
-                    userId,
-                    company,
-                    page.PageData,
-                    cancellationToken);
-
-                if (page.PageData.Count == 0 || offset + page.PageData.Count >= page.Count)
-                    break;
-
-                offset += page.PageData.Count;
-            }
-
-            cursor = chunkTo;
-        }
-
-        return loaded;
-    }
-
-    private async Task<int> ProcessPublicPublicationPageAsync(
-        Guid userId,
-        TrackedCompany company,
-        IReadOnlyList<FedresursPublicPublicationItem> items,
-        CancellationToken cancellationToken)
-    {
-        var loaded = 0;
-
-        foreach (var item in items)
-        {
-            if (string.IsNullOrWhiteSpace(item.Guid))
-                continue;
-
-            var publicationGuid = item.Guid.Trim();
-            var normalizedGuid = publicationGuid.ToLowerInvariant();
-            var publicationNumber = string.IsNullOrWhiteSpace(item.Number) ? publicationGuid : item.Number.Trim();
-            var publicationDate = NormalizeFedresursDate(item.DatePublish);
-
-            var exists = await _db.EfrsbMessages.AnyAsync(
-                x => x.TrackedCompanyId == company.Id
-                    && (x.FedresursGuid.ToLower() == normalizedGuid || x.Number == publicationNumber),
-                cancellationToken);
-
-            if (exists)
-                continue;
-
-            var message = new EfrsbMessage
-            {
-                TrackedCompanyId = company.Id,
-                FedresursGuid = normalizedGuid,
-                BankruptGuid = company.BankruptGuid,
-                Number = publicationNumber,
-                DatePublish = publicationDate,
-                Type = BuildPublicType(item.Type),
-                CourtDecisionType = item.Title,
-                ContentXml = BuildPublicContentXml(item),
-                HasViolation = false,
-                IsLocked = item.IsLocked,
-                LockReason = item.IsLocked ? "Публикация заблокирована на публичном Федресурсе" : null,
-                IsAnnulled = item.IsAnnulled
-            };
-
-            _db.EfrsbMessages.Add(message);
-            await _db.SaveChangesAsync(cancellationToken);
-
-            _db.UserMessageStates.Add(new UserMessageState
-            {
-                UserId = userId,
-                EfrsbMessageId = message.Id,
-                IsRead = false
-            });
-
-            loaded++;
-        }
-
-        return loaded;
-    }
-
-    private async Task<FedresursPublicCompanyItem?> ResolvePublicCompanyAsync(
-        TrackedCompany company,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _fedresurs.FindPublicCompanyAsync(
-                company.Inn,
-                company.Ogrn,
-                company.Name,
-                cancellationToken);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private async Task RefreshMetadataAsync(
         TrackedCompany company,
         CancellationToken cancellationToken)
@@ -823,14 +712,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             .ToList();
 
         var total = lastMessagesPage.Total + lastReportsPage.Total;
-
-        // Метаданные истории берём только из официального service_rest.
-        // Публичная карточка Федресурса используется ниже только для дозагрузки
-        // sfactmessages/ЕГРЮЛ-публикаций. Если использовать её count/oldest date
-        // на этапе metadata, ошибочно выбранная публичная карточка может увести
-        // историю в 2015 год и запустить огромную догрузку.
-
-        company.TotalMessages = Math.Max(company.TotalMessages, total);
+        company.TotalMessages = total;
         company.FirstMessageDate = firstDates.Count == 0 ? null : firstDates.Min();
         company.LastMessageDate = lastDates.Count == 0 ? null : lastDates.Max();
         company.LastMetadataSyncAtUtc = DateTime.UtcNow;
@@ -936,9 +818,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         try
         {
-            if (IsPublicType(message.Type))
-                return;
-
             var archiveBytes = IsReportType(message.Type)
                 ? await _fedresurs.DownloadReportFilesArchiveAsync(
                     message.FedresursGuid,
@@ -988,77 +867,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     }
 
 
-    private static string BuildPublicType(string? type)
-    {
-        return string.IsNullOrWhiteSpace(type)
-            ? "Public:Publication"
-            : $"Public:{type.Trim()}";
-    }
-
-    private static string BuildPublicContentXml(FedresursPublicPublicationItem item)
-    {
-        var root = new XElement(
-            "PublicFedresursPublication",
-            new XElement("Guid", item.Guid),
-            new XElement("Number", item.Number),
-            new XElement("DatePublish", item.DatePublish.ToString("O")),
-            new XElement("Type", item.Type ?? string.Empty),
-            new XElement("Title", item.Title ?? string.Empty),
-            new XElement("PublisherName", item.PublisherName ?? string.Empty),
-            new XElement("PublisherType", item.PublisherType ?? string.Empty),
-            new XElement("BankruptName", item.BankruptName ?? string.Empty));
-
-        AppendPublicParticipants(root, item.Participants);
-
-        return new XDocument(root).ToString(SaveOptions.DisableFormatting);
-    }
-
-    private static void AppendPublicParticipants(XElement root, JsonElement? participants)
-    {
-        if (!participants.HasValue || participants.Value.ValueKind != JsonValueKind.Array)
-            return;
-
-        var container = new XElement("Participants");
-        foreach (var participant in participants.Value.EnumerateArray())
-        {
-            var value = participant.ValueKind switch
-            {
-                JsonValueKind.String => participant.GetString(),
-                JsonValueKind.Object => FirstJsonString(
-                    participant,
-                    "name",
-                    "fullName",
-                    "shortName",
-                    "inn",
-                    "ogrn"),
-                _ => participant.ToString()
-            };
-
-            if (!string.IsNullOrWhiteSpace(value))
-                container.Add(new XElement("Participant", value.Trim()));
-        }
-
-        if (container.HasElements)
-            root.Add(container);
-    }
-
-    private static string? FirstJsonString(JsonElement element, params string[] names)
-    {
-        foreach (var name in names)
-        {
-            if (!element.TryGetProperty(name, out var property))
-                continue;
-
-            if (property.ValueKind == JsonValueKind.String)
-                return property.GetString();
-
-            if (property.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False)
-                return property.ToString();
-        }
-
-        return null;
-    }
-
     private static string BuildReportType(string type)
     {
         return string.IsNullOrWhiteSpace(type)
@@ -1071,10 +879,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         return type.StartsWith("Report", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsPublicType(string type)
-    {
-        return type.StartsWith("Public:", StringComparison.OrdinalIgnoreCase);
-    }
 
     private static bool NeedsIdentityRefresh(TrackedCompany company)
     {
