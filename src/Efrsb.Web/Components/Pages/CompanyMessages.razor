@@ -34,6 +34,7 @@ else if (company is not null)
             <h1>Все сообщения</h1>
             <div class="company-name">@DisplayCompanyName(company)</div>
             <div class="message-actions">
+                <a class="btn btn-secondary" href="@($"/companies/{CompanyId}/worksheet")">Worksheet</a>
                 <button class="btn btn-secondary" @onclick="MarkAllRead" disabled="@(isBusy || company.UnreadCount == 0)">Прочитать все</button>
             </div>
             <div class="message-summary">
@@ -68,6 +69,8 @@ else if (company is not null)
     private string? status;
     private bool isBusy;
     private CancellationTokenSource? refreshCts;
+    private bool disposed;
+    private DateTime autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(1);
 
     private IReadOnlyList<EfrsbMessageDto> Messages => messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
 
@@ -80,6 +83,7 @@ else if (company is not null)
 
     public void Dispose()
     {
+        disposed = true;
         refreshCts?.Cancel();
         refreshCts?.Dispose();
     }
@@ -96,13 +100,23 @@ else if (company is not null)
 
     private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested && !disposed)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || disposed)
+                    break;
+
+                if (!ShouldPoll())
+                    continue;
+
                 await InvokeAsync(async () =>
                 {
+                    if (disposed)
+                        return;
+
                     await Load(silent: true);
                     StateHasChanged();
                 });
@@ -116,6 +130,14 @@ else if (company is not null)
                 // Автообновление не должно ронять страницу.
             }
         }
+    }
+
+    private bool ShouldPoll()
+    {
+        if (isBusy || DateTime.UtcNow <= autoRefreshUntilUtc)
+            return true;
+
+        return company is not null && company.TotalMessages > 0 && company.LoadedMessages < company.TotalMessages;
     }
 
     private async Task Load(bool silent = false)
@@ -158,6 +180,7 @@ else if (company is not null)
             status = changed == 0
                 ? "Непрочитанных сообщений не было."
                 : $"Прочитано сообщений: {changed}.";
+            autoRefreshUntilUtc = DateTime.UtcNow.AddSeconds(10);
             await Load();
         }
         catch (Exception ex)

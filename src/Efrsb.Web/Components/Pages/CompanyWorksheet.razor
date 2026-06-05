@@ -1,0 +1,1034 @@
+@page "/companies/{CompanyId:guid}/worksheet"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@attribute [Authorize]
+@implements IDisposable
+@using System.Security.Claims
+@using Efrsb.Application.Abstractions
+@using Efrsb.Contracts.Companies
+@using Efrsb.Contracts.Messages
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.JSInterop
+@inject ICompanyTrackingService CompanyService
+@inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
+
+@if (company is null && string.IsNullOrWhiteSpace(error))
+{
+    <section class="worksheet-page">
+        <div class="panel muted">Загрузка...</div>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(error))
+{
+    <section class="worksheet-page">
+        <div class="alert alert-error">@error</div>
+        <a href="/companies" class="back-link">← К компаниям</a>
+    </section>
+}
+else if (company is not null)
+{
+    <section class="worksheet-page" id="@WorksheetDomId">
+        <section class="worksheet-hero panel">
+            <div>
+                <a href="@($"/companies/{CompanyId}")" class="back-link">← К карточке компании</a>
+                <div class="entity-kind">Рабочая доска дела</div>
+                <h1>Worksheet</h1>
+                <div class="company-name">@DisplayCompanyName(company)</div>
+            </div>
+
+            <div class="worksheet-actions">
+                <a class="btn btn-secondary" href="@($"/companies/{CompanyId}/messages")">Все сообщения</a>
+                <button class="btn btn-secondary" @onclick="MarkAllRead" disabled="@(isBusy || company.UnreadCount == 0)">Прочитать все</button>
+                <button class="btn btn-secondary" @onclick="ResetLayout">Вернуть исходное положение</button>
+            </div>
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(status))
+        {
+            <div class="alert alert-info">@status</div>
+        }
+
+        <section class="worksheet-summary-grid">
+            <div class="panel summary-card">
+                <span>Загружено</span>
+                <strong>@company.LoadedMessages / @company.TotalMessages</strong>
+                <small>service_rest</small>
+            </div>
+            <div class="panel summary-card">
+                <span>Непрочитанные</span>
+                <strong>@company.UnreadCount</strong>
+                <small>для текущего пользователя</small>
+            </div>
+            <div class="panel summary-card">
+                <span>Период</span>
+                <strong>@FormatDate(company.FirstMessageDate) — @FormatDate(company.LastMessageDate)</strong>
+                <small>по загруженным публикациям</small>
+            </div>
+            <div class="panel summary-card">
+                <span>Текущая процедура</span>
+                <strong>@CurrentProcedure</strong>
+                <small>определено по судебным актам и отчетам</small>
+            </div>
+        </section>
+
+        <section class="panel worksheet-note-panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Заметки по компании</h2>
+                    <p class="muted">Хранятся в браузере пользователя. Миграция БД не нужна.</p>
+                </div>
+            </div>
+            <textarea class="company-note" data-ws-note="@CompanyNoteKey" placeholder="Добавьте рабочую заметку по компании..."></textarea>
+        </section>
+
+        <section class="panel worksheet-toolbar">
+            <div class="toolbar-group">
+                <label>Режим</label>
+                <select value="@viewMode" @onchange="OnModeChanged">
+                    <option value="chains">Цепочки</option>
+                    <option value="groups">По разделам</option>
+                    <option value="timeline">Хронология</option>
+                    <option value="newest">Сначала новые</option>
+                </select>
+            </div>
+
+            <label class="check-filter">
+                <input type="checkbox" checked="@showOnlyUnread" @onchange="OnUnreadFilterChanged" />
+                Только непрочитанные
+            </label>
+
+            <div class="toolbar-hint">
+                Карточки можно двигать мышкой. Кнопка сброса вернет автораскладку.
+            </div>
+        </section>
+
+        @if (KeyEvents.Count > 0)
+        {
+            <section class="panel key-events-panel">
+                <div class="section-heading">
+                    <h2>Ключевые события</h2>
+                    <span class="muted">судебные акты и отчеты</span>
+                </div>
+                <div class="key-events">
+                    @foreach (var item in KeyEvents)
+                    {
+                        <a class="key-event" href="@($"/messages/{item.Id}")">
+                            <span>@item.DatePublish.ToLocalTime().ToString("dd.MM.yyyy")</span>
+                            <strong>@GetTypeTitle(item.Type, item.CourtDecisionType)</strong>
+                        </a>
+                    }
+                </div>
+            </section>
+        }
+
+        <section class="worksheet-board">
+            @foreach (var group in Groups)
+            {
+                <section class="worksheet-group panel @group.CssClass">
+                    <div class="group-head">
+                        <div>
+                            <h2>@group.Title</h2>
+                            @if (!string.IsNullOrWhiteSpace(group.Subtitle))
+                            {
+                                <p>@group.Subtitle</p>
+                            }
+                        </div>
+                        <span>@group.Items.Count</span>
+                    </div>
+
+                    <div class="worksheet-cards @(viewMode == "chains" ? "chain-mode" : string.Empty)">
+                        @foreach (var item in group.Items)
+                        {
+                            <article class="worksheet-card @(item.IsRead ? string.Empty : "is-unread") @(item.IsAnnulled ? "is-annulled" : string.Empty)"
+                                     data-ws-card="@item.Id"
+                                     data-ws-position-key="@PositionKey(item.Id)">
+                                <div class="card-topline">
+                                    <a href="@($"/messages/{item.Id}")">@item.Number</a>
+                                    <span>@item.DatePublish.ToLocalTime().ToString("dd.MM.yyyy")</span>
+                                </div>
+
+                                <h3>@GetTypeTitle(item.Type, item.CourtDecisionType)</h3>
+
+                                <div class="card-badges">
+                                    @if (!item.IsRead)
+                                    {
+                                        <span class="badge badge-warning">Новое</span>
+                                    }
+                                    @if (item.IsLocked)
+                                    {
+                                        <span class="badge">Заблокировано</span>
+                                    }
+                                    @if (item.IsAnnulled)
+                                    {
+                                        <span class="badge badge-danger">Аннулировано</span>
+                                    }
+                                    @if (item.HasViolation == true)
+                                    {
+                                        <span class="badge badge-danger">Нарушение срока</span>
+                                    }
+                                </div>
+
+                                <textarea class="card-note" data-ws-note="@NoteKey(item.Id)" placeholder="Заметка к сообщению..."></textarea>
+                            </article>
+                        }
+                    </div>
+                </section>
+            }
+        </section>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public Guid CompanyId { get; set; }
+
+    private TrackedCompanyDto? company;
+    private IReadOnlyList<EfrsbMessageDto>? messages;
+    private string? error;
+    private string? status;
+    private bool isBusy;
+    private bool showOnlyUnread;
+    private string viewMode = "chains";
+    private CancellationTokenSource? refreshCts;
+    private bool disposed;
+    private bool scriptReady;
+    private DateTime autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(1);
+
+    private string WorksheetDomId => $"worksheet-{CompanyId:N}";
+    private string CompanyNoteKey => $"efrsb:worksheet:{CompanyId:N}:company-note";
+
+    private IReadOnlyList<EfrsbMessageDto> Messages => messages?.ToList() ?? [];
+
+    private IReadOnlyList<EfrsbMessageDto> VisibleMessages
+    {
+        get
+        {
+            var query = Messages.AsEnumerable();
+            if (showOnlyUnread)
+                query = query.Where(x => !x.IsRead);
+
+            return viewMode switch
+            {
+                "timeline" => query.OrderBy(x => x.DatePublish).ToList(),
+                "newest" => query.OrderByDescending(x => x.DatePublish).ToList(),
+                _ => query.OrderBy(x => x.DatePublish).ToList()
+            };
+        }
+    }
+
+    private IReadOnlyList<EfrsbMessageDto> KeyEvents => Messages
+        .Where(x => IsCourtEvent(x) || x.Type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase))
+        .OrderBy(x => x.DatePublish)
+        .Take(8)
+        .ToList();
+
+    private string CurrentProcedure
+    {
+        get
+        {
+            var latestCourt = Messages
+                .Where(IsCourtEvent)
+                .OrderByDescending(x => x.DatePublish)
+                .FirstOrDefault();
+
+            var title = latestCourt is null ? null : GetTypeTitle(latestCourt.Type, latestCourt.CourtDecisionType);
+            if (string.IsNullOrWhiteSpace(title))
+                return "Не определена";
+
+            if (title.Contains("конкурс", StringComparison.OrdinalIgnoreCase))
+                return "Конкурсное производство";
+            if (title.Contains("наблюден", StringComparison.OrdinalIgnoreCase))
+                return "Наблюдение";
+            if (title.Contains("внеш", StringComparison.OrdinalIgnoreCase))
+                return "Внешнее управление";
+            if (title.Contains("реструктур", StringComparison.OrdinalIgnoreCase))
+                return "Реструктуризация долгов";
+            if (title.Contains("реализац", StringComparison.OrdinalIgnoreCase))
+                return "Реализация имущества";
+
+            return title;
+        }
+    }
+
+    private IReadOnlyList<WorksheetGroup> Groups => BuildGroups();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+        refreshCts = new CancellationTokenSource();
+        _ = RefreshLoop(refreshCts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (company is not null)
+        {
+            await EnsureWorksheetScript();
+            await JS.InvokeVoidAsync("efrsbWorksheet.init", WorksheetDomId);
+        }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        refreshCts?.Cancel();
+        refreshCts?.Dispose();
+    }
+
+    private async Task<Guid> GetUserId()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Пользователь не авторизован.");
+
+        return Guid.Parse(value);
+    }
+
+    private async Task RefreshLoop(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && !disposed)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || disposed)
+                    break;
+
+                if (!ShouldPoll())
+                    continue;
+
+                await InvokeAsync(async () =>
+                {
+                    if (disposed)
+                        return;
+
+                    await Load(silent: true);
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Автообновление не должно ронять страницу.
+            }
+        }
+    }
+
+    private bool ShouldPoll()
+    {
+        if (isBusy || DateTime.UtcNow <= autoRefreshUntilUtc)
+            return true;
+
+        return company is not null && company.TotalMessages > 0 && company.LoadedMessages < company.TotalMessages;
+    }
+
+    private async Task Load(bool silent = false)
+    {
+        if (!silent)
+            error = null;
+
+        try
+        {
+            var userId = await GetUserId();
+            var companies = await CompanyService.GetCompaniesAsync(userId, CancellationToken.None);
+            company = companies.FirstOrDefault(x => x.Id == CompanyId);
+
+            if (company is null)
+            {
+                if (!silent)
+                    error = "Компания не найдена или нет доступа.";
+                return;
+            }
+
+            messages = await CompanyService.GetMessagesAsync(userId, CompanyId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                error = ex.Message;
+        }
+    }
+
+    private async Task MarkAllRead()
+    {
+        error = null;
+        isBusy = true;
+        status = "Помечаем сообщения прочитанными...";
+
+        try
+        {
+            var userId = await GetUserId();
+            var changed = await CompanyService.MarkCompanyMessagesReadAsync(userId, CompanyId, CancellationToken.None);
+            status = changed == 0
+                ? "Непрочитанных сообщений не было."
+                : $"Прочитано сообщений: {changed}.";
+            autoRefreshUntilUtc = DateTime.UtcNow.AddSeconds(10);
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private Task OnModeChanged(ChangeEventArgs e)
+    {
+        viewMode = e.Value?.ToString() ?? "chains";
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnUnreadFilterChanged(ChangeEventArgs e)
+    {
+        showOnlyUnread = e.Value is bool value && value;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ResetLayout()
+    {
+        await EnsureWorksheetScript();
+        await JS.InvokeVoidAsync("efrsbWorksheet.reset", WorksheetDomId);
+    }
+
+    private IReadOnlyList<WorksheetGroup> BuildGroups()
+    {
+        var items = VisibleMessages;
+
+        if (viewMode == "timeline")
+        {
+            return [new WorksheetGroup("Хронология", "Все сообщения в порядке развития дела", items, "group-timeline")];
+        }
+
+        if (viewMode == "newest")
+        {
+            return [new WorksheetGroup("Сначала новые", "Оперативный список последних событий", items, "group-newest")];
+        }
+
+        var order = new[]
+        {
+            "Судебные акты",
+            "Отчеты АУ",
+            "Собрания кредиторов",
+            "Требования кредиторов",
+            "Оспаривание сделок",
+            "Инвентаризация имущества",
+            "Работники должника",
+            "Торги и имущество",
+            "Аннулирование",
+            "Прочее"
+        };
+
+        return items
+            .GroupBy(GetWorksheetGroupTitle)
+            .OrderBy(g => Array.IndexOf(order, g.Key) < 0 ? order.Length : Array.IndexOf(order, g.Key))
+            .ThenBy(g => g.Key)
+            .Select(g => new WorksheetGroup(
+                viewMode == "chains" ? $"Цепочка: {g.Key}" : g.Key,
+                GetGroupSubtitle(g.Key),
+                g.OrderBy(x => x.DatePublish).ToList(),
+                CssClassForGroup(g.Key)))
+            .ToList();
+    }
+
+    private string NoteKey(Guid messageId) => $"efrsb:worksheet:{CompanyId:N}:note:{messageId:N}";
+
+    private string PositionKey(Guid messageId) => $"efrsb:worksheet:{CompanyId:N}:pos:{messageId:N}";
+
+    private static bool IsCourtEvent(EfrsbMessageDto item)
+    {
+        return item.Type.Equals("ArbitralDecree", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetWorksheetGroupTitle(EfrsbMessageDto item)
+    {
+        var type = item.Type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase)
+            ? "Report"
+            : item.Type;
+        var title = GetTypeTitle(item.Type, item.CourtDecisionType);
+
+        if (type.Equals("ArbitralDecree", StringComparison.OrdinalIgnoreCase))
+            return "Судебные акты";
+        if (item.Type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase))
+            return "Отчеты АУ";
+        if (ContainsAny(type, title, "Meeting", "Committee", "собрани", "комитет"))
+            return "Собрания кредиторов";
+        if (ContainsAny(type, title, "Demand", "Creditor", "требован", "кредитор"))
+            return "Требования кредиторов";
+        if (ContainsAny(type, title, "DealInvalid", "ActDeal", "оспарив", "сделк", "убытк"))
+            return "Оспаривание сделок";
+        if (ContainsAny(type, title, "Inventory", "инвентаризац"))
+            return "Инвентаризация имущества";
+        if (ContainsAny(type, title, "Worker", "работник"))
+            return "Работники должника";
+        if (ContainsAny(type, title, "Auction", "Trade", "Sale", "торг", "продаж"))
+            return "Торги и имущество";
+        if (ContainsAny(type, title, "Annul", "аннулир"))
+            return "Аннулирование";
+
+        return "Прочее";
+    }
+
+    private static string GetGroupSubtitle(string group)
+    {
+        return group switch
+        {
+            "Судебные акты" => "ключевые процессуальные точки дела",
+            "Отчеты АУ" => "отчеты по процедурам из v1/reports",
+            "Собрания кредиторов" => "созыв, проведение и результаты собраний",
+            "Требования кредиторов" => "получение и включение требований",
+            "Оспаривание сделок" => "заявления, решения и пересмотры по сделкам",
+            "Инвентаризация имущества" => "сведения об имуществе должника",
+            "Работники должника" => "сообщения по работникам и бывшим работникам",
+            "Торги и имущество" => "публикации по продаже имущества и торгам",
+            "Аннулирование" => "сообщения об отмене ранее опубликованных сведений",
+            _ => "прочие публикации service_rest"
+        };
+    }
+
+    private static string CssClassForGroup(string group)
+    {
+        return group switch
+        {
+            "Судебные акты" => "group-court",
+            "Отчеты АУ" => "group-report",
+            "Собрания кредиторов" => "group-meeting",
+            "Требования кредиторов" => "group-demand",
+            "Оспаривание сделок" => "group-deal",
+            _ => "group-default"
+        };
+    }
+
+    private static bool ContainsAny(string type, string title, params string[] markers)
+    {
+        foreach (var marker in markers)
+        {
+            if (type.Contains(marker, StringComparison.OrdinalIgnoreCase) ||
+                title.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string DisplayCompanyName(TrackedCompanyDto company)
+    {
+        if (!string.IsNullOrWhiteSpace(company.Name))
+            return company.Name;
+        if (!string.IsNullOrWhiteSpace(company.Inn))
+            return company.Inn;
+        if (!string.IsNullOrWhiteSpace(company.Ogrn))
+            return company.Ogrn;
+        return company.SearchQuery;
+    }
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToLocalTime().ToString("dd.MM.yyyy") : "-";
+    }
+
+    private static string GetTypeTitle(string type, string? courtDecisionType)
+    {
+        if (type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase))
+        {
+            var reportType = type["Report:".Length..];
+            var title = reportType switch
+            {
+                "Final" or "Final2" => "Финальный отчет",
+                "Periodic" => "Периодический отчет",
+                "SignificantEvent" => "Отчет о существенном событии",
+                "Annulment" or "Annulment2" => "Аннулирование отчета",
+                _ => reportType
+            };
+
+            return !string.IsNullOrWhiteSpace(courtDecisionType)
+                ? $"{title}. {GetProcedureTitle(courtDecisionType)}"
+                : title;
+        }
+
+        if (type.Equals("ArbitralDecree", StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(courtDecisionType)
+                ? $"Судебный акт: {GetCourtDecisionTitle(courtDecisionType)}"
+                : "Судебный акт";
+        }
+
+        return type switch
+        {
+            "Meeting" => "Сообщение о собрании кредиторов",
+            "MeetingResult" => "Результаты собрания кредиторов",
+            "CommitteeResult" => "Результаты комитета кредиторов",
+            "ReceivingCreditorDemand" or "ReceivingCreditorDemand2" => "Уведомление о получении требований кредитора",
+            "CreditorsDemandRegistered" => "Включение требований в реестр кредиторов",
+            "DealInvalid" or "DealInvalid2" => "Заявление о признании сделки недействительной",
+            "DeclarationPersonDamages" => "Заявление о привлечении к ответственности в виде возмещения убытков",
+            "ActDealInvalid" or "ActReviewDealInvalid" => "Результаты рассмотрения/пересмотра заявлений об оспаривании сделок",
+            "PropertyInventoryResult" => "Сведения о результатах инвентаризации имущества должника",
+            "MeetingWorker2" => "Уведомление о проведении собрания работников должника",
+            "MeetingWorkerResult" => "Решения собрания работников должника",
+            "Annul" => "Аннулирование ранее опубликованного сообщения",
+            _ => type
+        };
+    }
+
+    private static string GetCourtDecisionTitle(string type)
+    {
+        return type switch
+        {
+            "Observation" => "о введении наблюдения",
+            "Receivership" => "о признании должника банкротом и открытии конкурсного производства",
+            "ExternalManagement" => "о введении внешнего управления",
+            "FinancialRecovery" => "о введении финансового оздоровления",
+            "DebtRestructuring" => "о реструктуризации долгов гражданина",
+            "PropertySale" => "о реализации имущества гражданина",
+            "LegalCaseTermination" => "о прекращении производства по делу",
+            "LegalCaseEnd" => "о завершении производства по делу",
+            _ => type
+        };
+    }
+
+    private static string GetProcedureTitle(string type)
+    {
+        return type switch
+        {
+            "Watching" => "Наблюдение",
+            "Tender" => "Конкурсное производство",
+            "ExternalManagement" => "Внешнее управление",
+            "FinancialRecovery" => "Финансовое оздоровление",
+            "CitizenDebtRestructuring" => "Реструктуризация долгов гражданина",
+            "CitizenAssetsDisposal" => "Реализация имущества гражданина",
+            _ => type
+        };
+    }
+
+    private async Task EnsureWorksheetScript()
+    {
+        const string script = @"
+if (!window.efrsbWorksheet) {
+  window.efrsbWorksheet = {
+    init: function(containerId) {
+      var root = document.getElementById(containerId);
+      if (!root) return;
+
+      root.querySelectorAll('[data-ws-note]').forEach(function(el) {
+        if (el.dataset.wsNoteReady === '1') return;
+        el.dataset.wsNoteReady = '1';
+        var key = el.getAttribute('data-ws-note');
+        var saved = localStorage.getItem(key);
+        if (saved !== null) el.value = saved;
+        el.addEventListener('input', function() {
+          localStorage.setItem(key, el.value || '');
+        });
+      });
+
+      root.querySelectorAll('[data-ws-card]').forEach(function(card) {
+        if (card.dataset.wsDragReady === '1') return;
+        card.dataset.wsDragReady = '1';
+        var key = card.getAttribute('data-ws-position-key');
+        var saved = localStorage.getItem(key);
+        if (saved) {
+          try {
+            var pos = JSON.parse(saved);
+            card.style.position = 'relative';
+            card.style.left = (pos.x || 0) + 'px';
+            card.style.top = (pos.y || 0) + 'px';
+            card.classList.add('is-moved');
+          } catch (_) {}
+        }
+
+        var startX = 0, startY = 0, baseX = 0, baseY = 0, moving = false;
+        card.addEventListener('pointerdown', function(e) {
+          if (e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'A' || e.target.tagName === 'BUTTON')) return;
+          moving = true;
+          startX = e.clientX;
+          startY = e.clientY;
+          baseX = parseFloat(card.style.left || '0') || 0;
+          baseY = parseFloat(card.style.top || '0') || 0;
+          card.setPointerCapture(e.pointerId);
+          card.classList.add('is-dragging');
+        });
+        card.addEventListener('pointermove', function(e) {
+          if (!moving) return;
+          var x = baseX + e.clientX - startX;
+          var y = baseY + e.clientY - startY;
+          card.style.position = 'relative';
+          card.style.left = x + 'px';
+          card.style.top = y + 'px';
+          card.classList.add('is-moved');
+        });
+        card.addEventListener('pointerup', function(e) {
+          if (!moving) return;
+          moving = false;
+          card.classList.remove('is-dragging');
+          var x = parseFloat(card.style.left || '0') || 0;
+          var y = parseFloat(card.style.top || '0') || 0;
+          localStorage.setItem(key, JSON.stringify({ x: x, y: y }));
+          try { card.releasePointerCapture(e.pointerId); } catch (_) {}
+        });
+      });
+    },
+    reset: function(containerId) {
+      var root = document.getElementById(containerId);
+      if (!root) return;
+      root.querySelectorAll('[data-ws-card]').forEach(function(card) {
+        var key = card.getAttribute('data-ws-position-key');
+        localStorage.removeItem(key);
+        card.style.left = '';
+        card.style.top = '';
+        card.style.position = '';
+        card.classList.remove('is-moved');
+      });
+    }
+  };
+}";
+
+        if (!scriptReady)
+        {
+            await JS.InvokeVoidAsync("eval", script);
+            scriptReady = true;
+        }
+    }
+
+    private sealed record WorksheetGroup(
+        string Title,
+        string Subtitle,
+        IReadOnlyList<EfrsbMessageDto> Items,
+        string CssClass);
+}
+
+<style>
+    .worksheet-page {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .panel {
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 18px;
+    }
+
+    .back-link,
+    .worksheet-card a,
+    .key-event {
+        color: #93c5fd;
+    }
+
+    .worksheet-hero {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+    }
+
+    .worksheet-hero h1 {
+        margin: 8px 0 4px;
+    }
+
+    .entity-kind,
+    .muted,
+    .summary-card span,
+    .summary-card small,
+    .toolbar-hint,
+    .group-head p {
+        color: #94a3b8;
+    }
+
+    .company-name {
+        font-weight: 700;
+        font-size: 1.1rem;
+    }
+
+    .worksheet-actions,
+    .message-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .btn {
+        border: 0;
+        border-radius: 9px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .btn:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+    }
+
+    .btn-secondary {
+        background: #334155;
+        color: #f8fafc;
+    }
+
+    .alert {
+        border-radius: 12px;
+        padding: 12px 14px;
+    }
+
+    .alert-info {
+        background: rgba(37, 99, 235, .12);
+        border: 1px solid rgba(59, 130, 246, .4);
+        color: #bfdbfe;
+    }
+
+    .alert-error {
+        background: rgba(220, 38, 38, .12);
+        border: 1px solid rgba(239, 68, 68, .45);
+        color: #fecaca;
+    }
+
+    .worksheet-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .summary-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .summary-card strong {
+        font-size: 1.05rem;
+    }
+
+    .section-heading,
+    .group-head,
+    .worksheet-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 14px;
+    }
+
+    .company-note,
+    .card-note,
+    .worksheet-toolbar select {
+        width: 100%;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        background: #0f172a;
+        color: #f8fafc;
+    }
+
+    .company-note {
+        min-height: 90px;
+        padding: 12px;
+    }
+
+    .worksheet-toolbar {
+        align-items: center;
+        flex-wrap: wrap;
+    }
+
+    .toolbar-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .worksheet-toolbar select {
+        min-width: 180px;
+        padding: 9px 10px;
+    }
+
+    .check-filter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .key-events {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .key-event {
+        text-decoration: none;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 10px;
+        background: #0f172a;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+
+    .key-event span {
+        color: #94a3b8;
+        font-size: .82rem;
+    }
+
+    .worksheet-board {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: start;
+    }
+
+    .worksheet-group {
+        min-height: 160px;
+    }
+
+    .group-head {
+        border-bottom: 1px solid #334155;
+        padding-bottom: 12px;
+        margin-bottom: 14px;
+    }
+
+    .group-head h2 {
+        margin: 0;
+        font-size: 1.1rem;
+    }
+
+    .group-head p {
+        margin: 4px 0 0;
+        font-size: .9rem;
+    }
+
+    .group-head > span {
+        background: #1e293b;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-weight: 700;
+    }
+
+    .worksheet-cards {
+        display: grid;
+        gap: 12px;
+    }
+
+    .worksheet-card {
+        border: 1px solid #2563eb;
+        border-radius: 14px;
+        background: #0f172a;
+        padding: 12px;
+        cursor: grab;
+        user-select: none;
+        transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+    }
+
+    .worksheet-card.is-dragging {
+        cursor: grabbing;
+        z-index: 5;
+        box-shadow: 0 18px 35px rgba(0,0,0,.35);
+    }
+
+    .worksheet-card.is-moved {
+        border-style: dashed;
+    }
+
+    .worksheet-card.is-unread {
+        border-color: #f59e0b;
+    }
+
+    .worksheet-card.is-annulled {
+        opacity: .82;
+    }
+
+    .chain-mode .worksheet-card:not(:last-child)::after {
+        content: "↓";
+        display: block;
+        color: #64748b;
+        text-align: center;
+        font-size: 1.25rem;
+        margin: 10px 0 -4px;
+    }
+
+    .card-topline {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        color: #94a3b8;
+        font-size: .88rem;
+    }
+
+    .worksheet-card h3 {
+        margin: 10px 0;
+        font-size: .98rem;
+        line-height: 1.35;
+    }
+
+    .card-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+
+    .badge {
+        background: #334155;
+        color: #e2e8f0;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: .78rem;
+        font-weight: 700;
+    }
+
+    .badge-warning {
+        background: #f59e0b;
+        color: #111827;
+    }
+
+    .badge-danger {
+        background: #dc2626;
+        color: #fff;
+    }
+
+    .card-note {
+        min-height: 54px;
+        padding: 8px;
+        font-size: .9rem;
+        user-select: text;
+    }
+
+    @@media (max-width: 1200px) {
+        .worksheet-summary-grid,
+        .key-events,
+        .worksheet-board {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+
+    @@media (max-width: 760px) {
+        .worksheet-hero,
+        .section-heading,
+        .group-head,
+        .worksheet-toolbar {
+            flex-direction: column;
+        }
+
+        .worksheet-summary-grid,
+        .key-events,
+        .worksheet-board {
+            grid-template-columns: 1fr;
+        }
+
+        .worksheet-actions {
+            justify-content: flex-start;
+        }
+    }
+</style>

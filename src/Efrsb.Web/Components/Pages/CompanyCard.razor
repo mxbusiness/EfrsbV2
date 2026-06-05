@@ -60,6 +60,7 @@ else if (company is not null)
 
             <div class="hero-actions" aria-label="Действия по компании">
                 <a href="@($"/companies/{CompanyId}/messages")" class="btn btn-secondary">Все сообщения</a>
+                <a href="@($"/companies/{CompanyId}/worksheet")" class="btn btn-secondary">Worksheet</a>
                 <button class="btn btn-secondary" @onclick="MarkAllRead" disabled="@(isBusy || company.UnreadCount == 0)">Прочитать все</button>
                 <button class="btn btn-primary" @onclick="Sync" disabled="@isBusy">Обновить</button>
                 <button class="btn btn-primary" @onclick="SyncHistory" disabled="@isBusy">Догрузить историю</button>
@@ -83,6 +84,7 @@ else if (company is not null)
                 <a href="#net-assets">Стоимость чистых активов</a>
                 <a href="#reorganization">Сведения о реорганизации</a>
                 <a href="#bankruptcy">Сведения о банкротстве</a>
+                <a href="@($"/companies/{CompanyId}/worksheet")">Worksheet</a>
                 <a href="#trades">Торги</a>
             </aside>
 
@@ -329,6 +331,8 @@ else if (company is not null)
     private string? status;
     private bool isBusy;
     private CancellationTokenSource? refreshCts;
+    private bool disposed;
+    private DateTime autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(1);
 
     private IReadOnlyList<EfrsbMessageDto> Messages => messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
 
@@ -384,6 +388,7 @@ else if (company is not null)
 
     public void Dispose()
     {
+        disposed = true;
         refreshCts?.Cancel();
         refreshCts?.Dispose();
     }
@@ -400,13 +405,23 @@ else if (company is not null)
 
     private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested && !disposed)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || disposed)
+                    break;
+
+                if (!ShouldPoll())
+                    continue;
+
                 await InvokeAsync(async () =>
                 {
+                    if (disposed)
+                        return;
+
                     await Load(silent: true);
                     StateHasChanged();
                 });
@@ -420,6 +435,14 @@ else if (company is not null)
                 // Автообновление не должно ронять страницу.
             }
         }
+    }
+
+    private bool ShouldPoll()
+    {
+        if (isBusy || DateTime.UtcNow <= autoRefreshUntilUtc)
+            return true;
+
+        return company is not null && company.TotalMessages > 0 && company.LoadedMessages < company.TotalMessages;
     }
 
     private async Task Load(bool silent = false)
@@ -498,6 +521,7 @@ else if (company is not null)
         {
             var userId = await GetUserId();
             var companyId = CompanyId;
+            autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(5);
             Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyAsync(userId, companyId));
             status = "Синхронизация свежих сообщений запущена в фоне.";
             await Load();
@@ -530,6 +554,7 @@ else if (company is not null)
         {
             var userId = await GetUserId();
             var companyId = CompanyId;
+            autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(10);
             Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyHistoryAsync(userId, companyId));
             status = "Догрузка истории запущена в фоне. Можно уйти со страницы — задача продолжится.";
             await Load();

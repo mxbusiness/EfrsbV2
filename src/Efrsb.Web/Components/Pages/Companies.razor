@@ -90,6 +90,7 @@ else
                             <td class="text-nowrap">@FormatDate(c.LastSyncedAtUtc)</td>
                             <td>
                                 <div class="row-actions">
+                                    <a class="btn btn-secondary" href="@($"/companies/{c.Id}/worksheet")">Worksheet</a>
                                     <button class="btn btn-danger" @onclick="() => Delete(c.Id)" disabled="@isBusy">Удалить</button>
                                 </div>
                             </td>
@@ -108,6 +109,8 @@ else
     private string? status;
     private bool isBusy;
     private CancellationTokenSource? refreshCts;
+    private bool disposed;
+    private DateTime autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(1);
 
     protected override async Task OnInitializedAsync()
     {
@@ -118,6 +121,7 @@ else
 
     public void Dispose()
     {
+        disposed = true;
         refreshCts?.Cancel();
         refreshCts?.Dispose();
     }
@@ -134,13 +138,23 @@ else
 
     private async Task RefreshLoop(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested && !disposed)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || disposed)
+                    break;
+
+                if (!ShouldPoll())
+                    continue;
+
                 await InvokeAsync(async () =>
                 {
+                    if (disposed)
+                        return;
+
                     await Load(silent: true);
                     StateHasChanged();
                 });
@@ -154,6 +168,19 @@ else
                 // Автообновление не должно ронять страницу.
             }
         }
+    }
+
+    private bool ShouldPoll()
+    {
+        if (isBusy || DateTime.UtcNow <= autoRefreshUntilUtc)
+            return true;
+
+        return companies?.Any(IsSyncLikelyInProgress) == true;
+    }
+
+    private static bool IsSyncLikelyInProgress(TrackedCompanyDto company)
+    {
+        return company.TotalMessages > 0 && company.LoadedMessages < company.TotalMessages;
     }
 
     private async Task Load(bool silent = false)
@@ -187,6 +214,7 @@ else
             query = string.Empty;
             var companyId = company.Id;
             status = "Компания добавлена. Догрузка истории запущена в фоне.";
+            autoRefreshUntilUtc = DateTime.UtcNow.AddMinutes(10);
             Jobs.Enqueue<FedresursSyncJob>(job => job.SyncCompanyHistoryAsync(userId, companyId));
             await Load();
         }
@@ -334,6 +362,11 @@ else
 
     .btn-primary {
         background: #2563eb;
+        color: white;
+    }
+
+    .btn-secondary {
+        background: #334155;
         color: white;
     }
 
