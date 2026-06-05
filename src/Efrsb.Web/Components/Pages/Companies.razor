@@ -1,87 +1,100 @@
 @page "/companies"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
-
 @using System.Security.Claims
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.JSInterop
-
 @inject ICompanyTrackingService CompanyService
 @inject AuthenticationStateProvider AuthState
 @inject IJSRuntime JS
 
-<h1>Отслеживаемые компании</h1>
-
-<div class="card">
-    <div class="row-wrap">
-        <input @bind="query" @bind:event="oninput" placeholder="ИНН / ОГРН / название / GUID" disabled="@isBusy" />
-        <button @onclick="Add" disabled="@(isBusy || string.IsNullOrWhiteSpace(query))">Добавить</button>
+<div class="page-head">
+    <div>
+        <h1>Отслеживаемые компании</h1>
+        <p>Добавьте компанию по ИНН, ОГРН, названию или BankruptGuid. Данные карточки и публикации автоматически подтянутся из ЕФРСБ.</p>
     </div>
-    <p class="muted">После добавления карточка компании и история публикаций автоматически подтягиваются из ЕФРСБ.</p>
 </div>
+
+<section class="panel add-panel">
+    <div class="add-form">
+        <input @bind="query"
+               @bind:event="oninput"
+               placeholder="ИНН / ОГРН / название / GUID"
+               disabled="@isBusy" />
+        <button class="btn btn-primary" @onclick="Add" disabled="@(isBusy || string.IsNullOrWhiteSpace(query))">
+            @(isBusy ? "Подождите..." : "Добавить")
+        </button>
+    </div>
+</section>
 
 @if (!string.IsNullOrWhiteSpace(error))
 {
-    <p class="error">@error</p>
+    <div class="alert alert-error">@error</div>
 }
 
 @if (!string.IsNullOrWhiteSpace(status))
 {
-    <p class="muted">@status</p>
+    <div class="alert alert-info">@status</div>
 }
 
 @if (companies is null)
 {
-    <p>Загрузка...</p>
+    <section class="panel muted">Загрузка...</section>
 }
 else if (companies.Count == 0)
 {
-    <p>Компаний пока нет.</p>
+    <section class="panel empty-state">Компаний пока нет.</section>
 }
 else
 {
-    <table>
-        <thead>
-            <tr>
-                <th>Компания</th>
-                <th>ИНН / ОГРН</th>
-                <th>Непрочитанные</th>
-                <th>Загружено</th>
-                <th>Всего в ЕФРСБ</th>
-                <th>Последняя публикация</th>
-                <th>Синхронизация</th>
-                <th>Действия</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var c in companies)
-            {
-                <tr>
-                    <td>
-                        <a href="@($"/companies/{c.Id}")" class="company-link">
-                            @(c.Name ?? c.SearchQuery)
-                        </a>
-                        @if (!string.IsNullOrWhiteSpace(c.BankruptGuid))
-                        {
-                            <div class="muted small">@c.BankruptGuid</div>
-                        }
-                    </td>
-                    <td>@DisplayPair(c.Inn, c.Ogrn)</td>
-                    <td>@c.UnreadCount</td>
-                    <td>@c.LoadedMessages</td>
-                    <td>@c.TotalMessages</td>
-                    <td>@FormatDate(c.LastMessageDate)</td>
-                    <td>@FormatDate(c.LastSyncedAtUtc)</td>
-                    <td class="actions-cell">
-                        <button class="danger" @onclick="() => Delete(c.Id)" disabled="@isBusy">Удалить</button>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+    <section class="panel table-panel">
+        <div class="table-wrap">
+            <table class="company-table">
+                <thead>
+                    <tr>
+                        <th>Компания</th>
+                        <th>ИНН / ОГРН</th>
+                        <th>Непрочитанные</th>
+                        <th>Загружено</th>
+                        <th>Всего ЕФРСБ</th>
+                        <th>Последняя публикация</th>
+                        <th>Синхронизация</th>
+                        <th class="actions-col">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in companies)
+                    {
+                        <tr>
+                            <td class="company-cell">
+                                <a href="@($"/companies/{c.Id}")" class="company-link">
+                                    @DisplayCompanyName(c)
+                                </a>
+                                @if (!string.IsNullOrWhiteSpace(c.BankruptGuid))
+                                {
+                                    <div class="muted small text-break">@c.BankruptGuid</div>
+                                }
+                            </td>
+                            <td class="text-nowrap">@DisplayPair(c.Inn, c.Ogrn)</td>
+                            <td>@c.UnreadCount</td>
+                            <td>@c.LoadedMessages</td>
+                            <td>@c.TotalMessages</td>
+                            <td class="text-nowrap">@FormatDate(c.LastMessageDate)</td>
+                            <td class="text-nowrap">@FormatDate(c.LastSyncedAtUtc)</td>
+                            <td>
+                                <div class="row-actions">
+                                    <button class="btn btn-danger" @onclick="() => Delete(c.Id)" disabled="@isBusy">Удалить</button>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
 }
 
 @code {
@@ -100,7 +113,6 @@ else
     {
         var auth = await AuthState.GetAuthenticationStateAsync();
         var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
-
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException("Пользователь не авторизован.");
 
@@ -116,19 +128,18 @@ else
     private async Task Add()
     {
         error = null;
-
         if (string.IsNullOrWhiteSpace(query))
             return;
 
         isBusy = true;
-        status = "Добавляем компанию и загружаем данные из ЕФРСБ...";
+        status = "Добавляем компанию и получаем карточку из ЕФРСБ...";
 
         try
         {
             var userId = await GetUserId();
             var company = await CompanyService.AddCompanyAsync(userId, query.Trim(), CancellationToken.None);
 
-            status = "Компания добавлена. Догружаем историю публикаций...";
+            status = "Карточка добавлена. Загружаем историю публикаций...";
             var loaded = await CompanyService.SyncCompanyHistoryAsync(userId, company.Id, CancellationToken.None);
 
             query = string.Empty;
@@ -149,7 +160,6 @@ else
     private async Task Delete(Guid id)
     {
         error = null;
-
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
             "Удалить компанию из отслеживания? Все загруженные сообщения по ней тоже будут удалены.");
@@ -164,7 +174,6 @@ else
         {
             var userId = await GetUserId();
             await CompanyService.DeleteCompanyAsync(userId, id, CancellationToken.None);
-
             status = "Компания удалена.";
             await Load();
         }
@@ -179,6 +188,20 @@ else
         }
     }
 
+    private static string DisplayCompanyName(TrackedCompanyDto company)
+    {
+        if (!string.IsNullOrWhiteSpace(company.Name))
+            return company.Name;
+
+        if (!string.IsNullOrWhiteSpace(company.Inn))
+            return company.Inn;
+
+        if (!string.IsNullOrWhiteSpace(company.Ogrn))
+            return company.Ogrn;
+
+        return company.SearchQuery;
+    }
+
     private static string DisplayPair(string? left, string? right)
     {
         var a = string.IsNullOrWhiteSpace(left) ? "-" : left;
@@ -188,8 +211,196 @@ else
 
     private static string FormatDate(DateTime? value)
     {
-        return value.HasValue
-            ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm")
-            : "-";
+        return value.HasValue ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : "-";
     }
 }
+
+<style>
+    .page-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 18px;
+    }
+
+    .page-head h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.2;
+    }
+
+    .page-head p {
+        margin: 0;
+        max-width: 850px;
+        color: #9ca3af;
+    }
+
+    .panel {
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #0f172a;
+        padding: 18px;
+        margin-bottom: 18px;
+    }
+
+    .add-panel {
+        padding: 16px;
+    }
+
+    .add-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+    }
+
+    .add-form input {
+        min-width: 320px;
+        max-width: 520px;
+        flex: 1 1 360px;
+        height: 38px;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        background: #020617;
+        color: #e5e7eb;
+        padding: 0 12px;
+    }
+
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+        white-space: nowrap;
+        cursor: pointer;
+        text-decoration: none;
+    }
+
+    .btn:disabled {
+        opacity: .65;
+        cursor: not-allowed;
+    }
+
+    .btn-primary {
+        background: #2563eb;
+        color: white;
+    }
+
+    .btn-danger {
+        background: #dc2626;
+        color: white;
+    }
+
+    .alert {
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 18px;
+        font-weight: 600;
+    }
+
+    .alert-error {
+        background: rgba(220, 38, 38, .15);
+        border: 1px solid rgba(220, 38, 38, .45);
+        color: #fecaca;
+    }
+
+    .alert-info {
+        background: rgba(37, 99, 235, .15);
+        border: 1px solid rgba(37, 99, 235, .45);
+        color: #bfdbfe;
+    }
+
+    .table-panel {
+        padding: 0;
+        overflow: hidden;
+    }
+
+    .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .company-table {
+        width: 100%;
+        min-width: 1050px;
+        border-collapse: collapse;
+    }
+
+    .company-table th,
+    .company-table td {
+        padding: 14px 12px;
+        border-bottom: 1px solid #334155;
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .company-table th {
+        color: #f8fafc;
+        font-size: 13px;
+        letter-spacing: .02em;
+    }
+
+    .company-table td {
+        color: #e5e7eb;
+    }
+
+    .company-cell {
+        min-width: 260px;
+    }
+
+    .company-link {
+        color: #a78bfa;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+    }
+
+    .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .actions-col {
+        width: 110px;
+    }
+
+    .muted {
+        color: #94a3b8;
+    }
+
+    .small {
+        margin-top: 4px;
+        font-size: 12px;
+        line-height: 1.35;
+    }
+
+    .text-nowrap {
+        white-space: nowrap;
+    }
+
+    .text-break {
+        word-break: break-word;
+    }
+
+    .empty-state {
+        color: #cbd5e1;
+    }
+
+    @@media (max-width: 720px) {
+        .add-form input {
+            min-width: 100%;
+        }
+
+        .btn {
+            width: 100%;
+        }
+    }
+</style>

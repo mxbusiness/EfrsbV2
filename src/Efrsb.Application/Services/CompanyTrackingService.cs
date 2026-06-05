@@ -1,9 +1,9 @@
+using System.IO.Compression;
 using Efrsb.Application.Abstractions;
 using Efrsb.Contracts.Companies;
 using Efrsb.Contracts.Messages;
 using Efrsb.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using System.IO.Compression;
 
 namespace Efrsb.Application.Services;
 
@@ -14,8 +14,7 @@ public interface IEfrsbDbContext
     DbSet<EfrsbMessageFile> EfrsbMessageFiles { get; }
     DbSet<UserMessageState> UserMessageStates { get; }
     DbSet<FedresursSyncLog> FedresursSyncLogs { get; }
-
-    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+    Task SaveChangesAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class CompanyTrackingService : ICompanyTrackingService
@@ -44,7 +43,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         CancellationToken cancellationToken = default)
     {
         var normalizedQuery = query.Trim();
-
         if (string.IsNullOrWhiteSpace(normalizedQuery))
             throw new InvalidOperationException("Введите ИНН, ОГРН, название или GUID компании.");
 
@@ -53,7 +51,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             cancellationToken);
 
         var first = bankrupts.PageData.FirstOrDefault();
-
         if (first is null || string.IsNullOrWhiteSpace(first.Guid))
             throw new InvalidOperationException("Компания не найдена в ЕФРСБ.");
 
@@ -135,8 +132,14 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
-        var result = new List<TrackedCompanyDto>();
+        var identityUpdated = false;
+        foreach (var company in companies)
+            identityUpdated |= await TryRefreshCompanyIdentityAsync(company, cancellationToken);
 
+        if (identityUpdated)
+            await _db.SaveChangesAsync(cancellationToken);
+
+        var result = new List<TrackedCompanyDto>();
         foreach (var company in companies)
             result.Add(await ToDtoAsync(company, userId, cancellationToken));
 
@@ -157,22 +160,18 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         if (string.IsNullOrWhiteSpace(company.BankruptGuid))
             throw new InvalidOperationException("Company has no BankruptGuid.");
 
-        var log = new FedresursSyncLog
-        {
-            TrackedCompanyId = company.Id
-        };
-
+        var log = new FedresursSyncLog { TrackedCompanyId = company.Id };
         _db.FedresursSyncLogs.Add(log);
 
         try
         {
+            await TryRefreshCompanyIdentityAsync(company, cancellationToken);
             await RefreshMetadataAsync(company, cancellationToken);
 
             var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
             var to = DateTime.UtcNow;
-            var loaded = 0;
 
-            loaded += await SyncMessagesRangeAsync(
+            var loaded = await SyncMessagesRangeAsync(
                 userId,
                 company,
                 from,
@@ -187,7 +186,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             log.FinishedAtUtc = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(cancellationToken);
-
             return loaded;
         }
         catch (Exception ex)
@@ -195,9 +193,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             log.Success = false;
             log.Error = ex.Message;
             log.FinishedAtUtc = DateTime.UtcNow;
-
             await _db.SaveChangesAsync(cancellationToken);
-
             throw;
         }
     }
@@ -216,15 +212,12 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         if (string.IsNullOrWhiteSpace(company.BankruptGuid))
             throw new InvalidOperationException("Company has no BankruptGuid.");
 
-        var log = new FedresursSyncLog
-        {
-            TrackedCompanyId = company.Id
-        };
-
+        var log = new FedresursSyncLog { TrackedCompanyId = company.Id };
         _db.FedresursSyncLogs.Add(log);
 
         try
         {
+            await TryRefreshCompanyIdentityAsync(company, cancellationToken);
             await RefreshMetadataAsync(company, cancellationToken);
 
             if (company.FirstMessageDate is null)
@@ -232,9 +225,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 log.Success = true;
                 log.MessagesLoaded = 0;
                 log.FinishedAtUtc = DateTime.UtcNow;
-
                 await _db.SaveChangesAsync(cancellationToken);
-
                 return 0;
             }
 
@@ -245,7 +236,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             while (from < finalTo)
             {
                 var to = from.AddDays(31);
-
                 if (to > finalTo)
                     to = finalTo;
 
@@ -267,7 +257,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             log.FinishedAtUtc = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(cancellationToken);
-
             return totalLoaded;
         }
         catch (Exception ex)
@@ -275,9 +264,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             log.Success = false;
             log.Error = ex.Message;
             log.FinishedAtUtc = DateTime.UtcNow;
-
             await _db.SaveChangesAsync(cancellationToken);
-
             throw;
         }
     }
@@ -417,7 +404,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     ContentXml = details.Content ?? item.Content,
                     HasViolation = item.HasViolation,
                     IsLocked = !string.IsNullOrWhiteSpace(item.LockReason),
-                    LockReason = item.LockReason
+                    LockReason = item.LockReason,
+                    IsAnnulled = !string.IsNullOrWhiteSpace(item.AnnulmentMessageGuid)
                 };
 
                 _db.EfrsbMessages.Add(message);
@@ -464,11 +452,63 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         company.TotalMessages = lastPage.Total;
         company.FirstMessageDate = NormalizeNullableFedresursDate(
             firstPage.PageData.FirstOrDefault()?.DatePublish);
-
         company.LastMessageDate = NormalizeNullableFedresursDate(
             lastPage.PageData.FirstOrDefault()?.DatePublish);
-
         company.LastMetadataSyncAtUtc = DateTime.UtcNow;
+    }
+
+    private async Task<bool> TryRefreshCompanyIdentityAsync(
+        TrackedCompany company,
+        CancellationToken cancellationToken)
+    {
+        if (!NeedsIdentityRefresh(company) || string.IsNullOrWhiteSpace(company.BankruptGuid))
+            return false;
+
+        try
+        {
+            var bankrupts = await _fedresurs.SearchBankruptsAsync(
+                company.BankruptGuid,
+                cancellationToken);
+
+            var item = bankrupts.PageData.FirstOrDefault(x =>
+                    string.Equals(x.Guid, company.BankruptGuid, StringComparison.OrdinalIgnoreCase))
+                ?? bankrupts.PageData.FirstOrDefault();
+
+            if (item is null)
+                return false;
+
+            var changed = false;
+
+            if (string.IsNullOrWhiteSpace(company.Name) && !string.IsNullOrWhiteSpace(item.Name))
+            {
+                company.Name = item.Name.Trim();
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(company.Inn) && !string.IsNullOrWhiteSpace(item.Inn))
+            {
+                company.Inn = item.Inn.Trim();
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(company.Ogrn) && !string.IsNullOrWhiteSpace(item.Ogrn))
+            {
+                company.Ogrn = item.Ogrn.Trim();
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(company.BankruptGuid) && !string.IsNullOrWhiteSpace(item.Guid))
+            {
+                company.BankruptGuid = item.Guid;
+                changed = true;
+            }
+
+            return changed;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task<TrackedCompanyDto> ToDtoAsync(
@@ -478,13 +518,10 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         var unread = await _db.UserMessageStates
             .CountAsync(
-                x => x.UserId == userId
-                     && !x.IsRead
-                     && x.Message!.TrackedCompanyId == company.Id,
+                x => x.UserId == userId && !x.IsRead && x.Message!.TrackedCompanyId == company.Id,
                 cancellationToken);
 
         var loaded = await CountLoadedMessagesAsync(company.Id, cancellationToken);
-
         company.LoadedMessages = loaded;
 
         return new TrackedCompanyDto(
@@ -543,7 +580,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 cancellationToken);
 
             using var zip = ZipFile.OpenRead(archivePath);
-
             foreach (var entry in zip.Entries.Where(e => !string.IsNullOrWhiteSpace(e.Name)))
             {
                 _db.EfrsbMessageFiles.Add(new EfrsbMessageFile
@@ -563,6 +599,14 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
     }
 
+    private static bool NeedsIdentityRefresh(TrackedCompany company)
+    {
+        return string.IsNullOrWhiteSpace(company.Name)
+            || string.IsNullOrWhiteSpace(company.Inn)
+            || string.IsNullOrWhiteSpace(company.Ogrn);
+    }
+
+
     private static DateTime NormalizeFedresursDate(DateTime value)
     {
         if (value.Kind == DateTimeKind.Utc)
@@ -576,8 +620,6 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
 
     private static DateTime? NormalizeNullableFedresursDate(DateTime? value)
     {
-        return value.HasValue
-            ? NormalizeFedresursDate(value.Value)
-            : null;
+        return value.HasValue ? NormalizeFedresursDate(value.Value) : null;
     }
 }

@@ -30,7 +30,6 @@ public sealed class FedresursClient : IFedresursClient
         await EnsureAuthorizedAsync(cancellationToken);
 
         var normalized = query.Trim();
-
         if (string.IsNullOrWhiteSpace(normalized))
             return new FedresursPagedResponse<FedresursBankruptItem>();
 
@@ -52,6 +51,9 @@ public sealed class FedresursClient : IFedresursClient
         }
         else if (Guid.TryParse(normalized, out _))
         {
+            // Карточка в этом сервисе предназначена для юридических лиц.
+            // Указываем type=Company и при поиске по GUID, чтобы ЕФРСБ вернул data компании.
+            parts.Add("type=Company");
             parts.Add($"guid={Uri.EscapeDataString(normalized)}");
         }
         else
@@ -156,7 +158,6 @@ public sealed class FedresursClient : IFedresursClient
             return Array.Empty<byte>();
 
         response.EnsureSuccessStatusCode();
-
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
@@ -164,19 +165,13 @@ public sealed class FedresursClient : IFedresursClient
     {
         if (!string.IsNullOrWhiteSpace(_jwt) && DateTime.UtcNow < _jwtExpiresAtUtc)
         {
-            _httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", _jwt);
-
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _jwt);
             return;
         }
 
         var response = await _httpClient.PostAsJsonAsync(
             "v1/auth",
-            new
-            {
-                login = _options.Login,
-                password = _options.Password
-            },
+            new { login = _options.Login, password = _options.Password },
             cancellationToken);
 
         response.EnsureSuccessStatusCode();
@@ -187,9 +182,7 @@ public sealed class FedresursClient : IFedresursClient
 
         _jwt = auth.Jwt;
         _jwtExpiresAtUtc = DateTime.UtcNow.AddHours(7).AddMinutes(45);
-
-        _httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", _jwt);
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _jwt);
     }
 
     private async Task<T?> GetJsonAsync<T>(
@@ -197,7 +190,6 @@ public sealed class FedresursClient : IFedresursClient
         CancellationToken cancellationToken)
     {
         var response = await _httpClient.GetAsync(url, cancellationToken);
-
         response.EnsureSuccessStatusCode();
 
         return await response.Content.ReadFromJsonAsync<T>(
