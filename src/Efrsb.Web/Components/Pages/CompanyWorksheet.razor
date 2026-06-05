@@ -248,7 +248,7 @@
     private string ViewKey => $"efrsb:worksheet:{CompanyId:N}:view";
     private string CompanyNoteKey => $"efrsb:worksheet:{CompanyId:N}:company-note";
 
-    private IReadOnlyList<EfrsbMessageDto> Messages => messages?.ToList() ?? Array.Empty<EfrsbMessageDto>();
+    private IReadOnlyList<EfrsbMessageDto> Messages => messages ?? Array.Empty<EfrsbMessageDto>();
 
     private IReadOnlyList<EfrsbMessageDto> VisibleMessages
     {
