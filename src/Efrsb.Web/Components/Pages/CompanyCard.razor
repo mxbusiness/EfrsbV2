@@ -2,6 +2,7 @@
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
 @using System.Security.Claims
+@using System.Xml.Linq
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Companies
 @using Efrsb.Contracts.Messages
@@ -33,32 +34,28 @@ else if (company is not null)
         <section class="hero-card">
             <div class="hero-main">
                 <a href="/companies" class="back-link">← К компаниям</a>
-                <div class="hero-title-row">
-                    <div>
-                        <div class="entity-kind">Юридическое лицо</div>
-                        <h1>@DisplayCompanyName(company)</h1>
-                    </div>
-                </div>
+                <div class="entity-kind">Юридическое лицо</div>
+                <h1>@DisplayCompanyName(company)</h1>
 
                 <div class="badge-row">
-                    <span class="badge badge-neutral">Юридическое лицо</span>
+                    <span class="status-pill status-neutral">Юридическое лицо</span>
                     @if (IsBankrupt)
                     {
-                        <span class="badge badge-danger">Есть сведения о банкротстве</span>
+                        <span class="status-pill status-danger">Есть сведения о банкротстве</span>
                     }
                     else
                     {
-                        <span class="badge badge-success">Нет признаков банкротства в загруженных публикациях</span>
+                        <span class="status-pill status-success">Нет признаков банкротства</span>
                     }
                     @if (company.UnreadCount > 0)
                     {
-                        <span class="badge badge-warning">Непрочитанные: @company.UnreadCount</span>
+                        <span class="status-pill status-warning">Непрочитанные: @company.UnreadCount</span>
                     }
                 </div>
             </div>
 
-            <div class="hero-actions">
-                <a href="#publications" class="btn btn-secondary">Все сообщения</a>
+            <div class="hero-actions" aria-label="Действия по компании">
+                <a href="@($"/companies/{CompanyId}/messages")" class="btn btn-secondary">Все сообщения</a>
                 <button class="btn btn-primary" @onclick="Sync" disabled="@isBusy">Обновить</button>
                 <button class="btn btn-primary" @onclick="SyncHistory" disabled="@isBusy">Догрузить историю</button>
             </div>
@@ -88,32 +85,56 @@ else if (company is not null)
                 <section id="general" class="panel section-panel">
                     <div class="section-heading">
                         <h2>Общая информация</h2>
-                        <span class="muted">Данные из карточки отслеживания и ЕФРСБ</span>
+                        <span class="muted">Карточка отслеживания и данные из публикаций ЕФРСБ</span>
                     </div>
 
-                    <div class="info-grid compact-identifiers">
-                        <div class="info-pair">
-                            <div class="info-label">ИНН</div>
-                            <div class="info-value">@Display(company.Inn)</div>
+                    <div class="identity-row">
+                        <div class="identity-item">
+                            <span>ИНН</span>
+                            <strong>@Display(company.Inn)</strong>
                         </div>
-                        <div class="info-pair">
-                            <div class="info-label">ОГРН</div>
-                            <div class="info-value">@Display(company.Ogrn)</div>
+                        <div class="identity-item">
+                            <span>ОГРН</span>
+                            <strong>@Display(company.Ogrn)</strong>
                         </div>
-                        <div class="info-pair">
-                            <div class="info-label">BankruptGuid</div>
-                            <div class="info-value text-break">@Display(company.BankruptGuid)</div>
+                        <div class="identity-item">
+                            <span>КПП</span>
+                            <strong>@UnavailableShort</strong>
                         </div>
                     </div>
 
-                    <div class="definition-list">
+                    <div class="definition-list fedresurs-like">
                         <div class="definition-row">
                             <div class="definition-label">Полное наименование</div>
                             <div class="definition-value">@Display(company.Name ?? company.SearchQuery)</div>
                         </div>
                         <div class="definition-row">
+                            <div class="definition-label">Уставный капитал</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Адрес по данным ЕГРЮЛ</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Дата регистрации</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
                             <div class="definition-label">Статус</div>
                             <div class="definition-value">@(IsBankrupt ? "Есть признаки процедуры банкротства по публикациям ЕФРСБ" : "Нет признаков банкротства в загруженных публикациях")</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Правовая форма (ОКОПФ)</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Вид деятельности (ОКВЭД)</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">BankruptGuid</div>
+                            <div class="definition-value text-break">@Display(company.BankruptGuid)</div>
                         </div>
                         <div class="definition-row">
                             <div class="definition-label">Первая публикация</div>
@@ -136,20 +157,48 @@ else if (company is not null)
 
                 <section id="publications" class="panel section-panel">
                     <div class="section-heading">
-                        <h2>Публикации</h2>
-                        <span class="muted">Последние загруженные сообщения</span>
+                        <div>
+                            <h2>Публикации</h2>
+                            <div class="section-subtitle">О лице</div>
+                        </div>
+                        <span class="muted">Последние 3 сообщения</span>
                     </div>
-                    @RenderMessageList(Messages.ToList(), "Публикаций пока нет.")
+
+                    @RenderMessageList(Messages.Take(3).ToList(), "Публикаций пока нет.", true)
+
+                    @if (Messages.Count > 3)
+                    {
+                        <div class="section-footer-link">
+                            <a href="@($"/companies/{CompanyId}/messages")">Вся информация →</a>
+                        </div>
+                    }
                 </section>
 
                 <section id="encumbrances" class="panel section-panel">
                     <h2>Обременения</h2>
-                    <p class="muted-block">Нет данных. В текущем REST API ЕФРСБ нет отдельного метода для данных публичного блока «Обременения».</p>
+                    <p class="muted-block">Нет данных. В текущем REST API ЕФРСБ нет отдельного метода для публичного блока «Обременения».</p>
                 </section>
 
                 <section id="eio" class="panel section-panel">
-                    <h2>ЕИО</h2>
-                    <p class="muted-block">Нет данных. Сведения о единоличном исполнительном органе не передаются через используемый REST API ЕФРСБ.</p>
+                    <h2>Единоличный исполнительный орган</h2>
+                    <div class="definition-list small-list">
+                        <div class="definition-row">
+                            <div class="definition-label">ФИО</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">ИНН</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Должность</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                        <div class="definition-row">
+                            <div class="definition-label">Дата внесения данных в ЕГРЮЛ</div>
+                            <div class="definition-value muted">@UnavailableText</div>
+                        </div>
+                    </div>
                 </section>
 
                 <section id="sro-info" class="panel section-panel">
@@ -179,10 +228,13 @@ else if (company is not null)
 
                 <section id="bankruptcy" class="panel section-panel">
                     <div class="section-heading">
-                        <h2>Сведения о банкротстве</h2>
+                        <div>
+                            <h2>Сведения о банкротстве</h2>
+                            <div class="section-subtitle">Публикации разделены по смысловым группам</div>
+                        </div>
                         @if (IsBankrupt)
                         {
-                            <span class="badge badge-danger">Банкротные публикации найдены</span>
+                            <span class="status-pill status-danger">Банкротные публикации найдены</span>
                         }
                     </div>
 
@@ -202,19 +254,41 @@ else if (company is not null)
                                 <strong>@FormatDate(BankruptcyMessages.FirstOrDefault()?.DatePublish)</strong>
                             </div>
                         </div>
-                        @RenderMessageList(BankruptcyMessages.Take(12).ToList(), "Нет данных")
+
+                        @foreach (var group in BankruptcyGroups)
+                        {
+                            <div class="bankruptcy-group">
+                                <div class="bankruptcy-group-head">
+                                    <div>
+                                        <h3>@group.Title</h3>
+                                        @if (!string.IsNullOrWhiteSpace(group.CaseNumber))
+                                        {
+                                            <div class="case-number">@group.CaseNumber</div>
+                                        }
+                                    </div>
+                                    <span class="muted">@group.Items.Count сообщений</span>
+                                </div>
+                                @RenderMessageList(group.Items.Take(3).ToList(), "Нет данных", true)
+                            </div>
+                        }
+
+                        <div class="section-footer-link">
+                            <a href="@($"/companies/{CompanyId}/messages")">Все банкротные сообщения →</a>
+                        </div>
                     }
                 </section>
 
                 <section id="trades" class="panel section-panel">
                     <div class="section-heading">
-                        <h2>Торги</h2>
-                        <span class="muted">Сообщения о продаже имущества и результатах торгов</span>
+                        <div>
+                            <h2>Торги</h2>
+                            <div class="section-subtitle">Сообщения о продаже имущества и результатах торгов</div>
+                        </div>
                     </div>
 
                     <div class="trade-group">
                         <h3>Продажа имущества при банкротстве</h3>
-                        @RenderMessageList(TradeMessages.Take(12).ToList(), "Нет данных")
+                        @RenderMessageList(TradeMessages.Take(3).ToList(), "Нет данных", true)
                     </div>
 
                     <div class="divider"></div>
@@ -240,8 +314,12 @@ else if (company is not null)
     [Parameter]
     public Guid CompanyId { get; set; }
 
+    private const string UnavailableShort = "Нет данных";
+    private const string UnavailableText = "Нет данных в текущем service_rest";
+
     private TrackedCompanyDto? company;
     private IReadOnlyList<EfrsbMessageDto>? messages;
+    private readonly Dictionary<Guid, EfrsbMessageDetailsDto> detailsCache = new();
     private string? error;
     private string? status;
     private bool isBusy;
@@ -249,14 +327,14 @@ else if (company is not null)
     private IReadOnlyList<EfrsbMessageDto> Messages => messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
 
     private IReadOnlyList<EfrsbMessageDto> BankruptcyMessages => Messages
-        .Where(m => BankruptcyTypes.Contains(m.Type) || m.Type.Contains("Bankruptcy", StringComparison.OrdinalIgnoreCase))
+        .Where(IsBankruptcyMessage)
         .ToList();
 
     private IReadOnlyList<EfrsbMessageDto> TradeMessages => Messages
-        .Where(m => TradeTypes.Contains(m.Type)
-            || m.Type.Contains("Auction", StringComparison.OrdinalIgnoreCase)
-            || m.Type.Contains("Trade", StringComparison.OrdinalIgnoreCase))
+        .Where(IsTradeMessage)
         .ToList();
+
+    private IReadOnlyList<BankruptcyGroup> BankruptcyGroups => BuildBankruptcyGroups();
 
     private bool IsBankrupt => BankruptcyMessages.Count > 0;
 
@@ -309,6 +387,7 @@ else if (company is not null)
     private async Task Load()
     {
         error = null;
+        detailsCache.Clear();
 
         try
         {
@@ -323,10 +402,21 @@ else if (company is not null)
             }
 
             messages = await CompanyService.GetMessagesAsync(userId, CompanyId, CancellationToken.None);
+            await LoadDetailsPreview(userId, CancellationToken.None);
         }
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+    }
+
+    private async Task LoadDetailsPreview(Guid userId, CancellationToken cancellationToken)
+    {
+        foreach (var item in Messages.Where(IsBankruptcyMessage).Take(30))
+        {
+            var details = await CompanyService.GetMessageDetailsAsync(userId, item.Id, cancellationToken);
+            if (details is not null)
+                detailsCache[item.Id] = details;
         }
     }
 
@@ -385,7 +475,29 @@ else if (company is not null)
         }
     }
 
-    private RenderFragment RenderMessageList(IReadOnlyList<EfrsbMessageDto> items, string emptyText) => builder =>
+    private IReadOnlyList<BankruptcyGroup> BuildBankruptcyGroups()
+    {
+        var order = new[]
+        {
+            "Конкурсное производство",
+            "Сообщения о намерении",
+            "Требования кредиторов",
+            "Внесудебное банкротство",
+            "Иные банкротные сведения"
+        };
+
+        return BankruptcyMessages
+            .GroupBy(GetBankruptcyGroupTitle)
+            .OrderBy(g => Array.IndexOf(order, g.Key) < 0 ? order.Length : Array.IndexOf(order, g.Key))
+            .ThenBy(g => g.Key)
+            .Select(g => new BankruptcyGroup(
+                g.Key,
+                g.Select(GetCaseNumber).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+                g.OrderByDescending(x => x.DatePublish).ToList()))
+            .ToList();
+    }
+
+    private RenderFragment RenderMessageList(IReadOnlyList<EfrsbMessageDto> items, string emptyText, bool showMeta = false) => builder =>
     {
         var seq = 0;
         if (items.Count == 0)
@@ -420,9 +532,24 @@ else if (company is not null)
             builder.CloseElement();
 
             builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", "publication-body");
+
+            builder.OpenElement(seq++, "div");
             builder.AddAttribute(seq++, "class", "publication-title");
             builder.AddContent(seq++, GetTypeTitle(item.Type));
             builder.CloseElement();
+
+            if (showMeta)
+            {
+                var caseNumber = GetCaseNumber(item);
+                if (!string.IsNullOrWhiteSpace(caseNumber))
+                {
+                    builder.OpenElement(seq++, "div");
+                    builder.AddAttribute(seq++, "class", "publication-meta");
+                    builder.AddContent(seq++, caseNumber);
+                    builder.CloseElement();
+                }
+            }
 
             if (item.HasViolation == true || item.IsLocked || item.IsAnnulled || !item.IsRead)
             {
@@ -442,6 +569,7 @@ else if (company is not null)
             }
 
             builder.CloseElement();
+            builder.CloseElement();
         }
 
         builder.CloseElement();
@@ -453,6 +581,66 @@ else if (company is not null)
         builder.AddAttribute(seq++, "class", "publication-flag");
         builder.AddContent(seq++, text);
         builder.CloseElement();
+    }
+
+    private static bool IsBankruptcyMessage(EfrsbMessageDto message)
+    {
+        return BankruptcyTypes.Contains(message.Type)
+            || message.Type.Contains("Bankruptcy", StringComparison.OrdinalIgnoreCase)
+            || message.Type.Contains("Creditor", StringComparison.OrdinalIgnoreCase)
+            || message.Type.Contains("Demand", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTradeMessage(EfrsbMessageDto message)
+    {
+        return TradeTypes.Contains(message.Type)
+            || message.Type.Contains("Auction", StringComparison.OrdinalIgnoreCase)
+            || message.Type.Contains("Trade", StringComparison.OrdinalIgnoreCase)
+            || message.Type.Contains("Sale", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetBankruptcyGroupTitle(EfrsbMessageDto item) => item.Type switch
+    {
+        "ArbitralDecree" or "InformationAboutBankruptcy" or "Final" or "Final2" => "Конкурсное производство",
+        "DemandAnnouncement" or "CourtAssertAcceptance" or "CourtAcceptanceStatement" or "IntentionCreditOrg" or "IntentionOfDemandsFulfilment" or "IntentionOfDemandsFulfilmentReview" => "Сообщения о намерении",
+        "ReceivingCreditorDemand" or "ReceivingCreditorDemand2" or "CreditorsDemandRegistered" => "Требования кредиторов",
+        "StartOfExtrajudicialBankruptcy" or "TerminationOfExtrajudicialBankruptcy" or "CompletionOfExtrajudicialBankruptcy" => "Внесудебное банкротство",
+        _ => "Иные банкротные сведения"
+    };
+
+    private string? GetCaseNumber(EfrsbMessageDto item)
+    {
+        return TryGetXmlValue(
+            item.Id,
+            "CaseNumber",
+            "caseNumber",
+            "LegalCaseNumber",
+            "CourtCaseNumber",
+            "ArbitrationCaseNumber",
+            "ArbitrationCaseNo");
+    }
+
+    private string? TryGetXmlValue(Guid messageId, params string[] localNames)
+    {
+        if (!detailsCache.TryGetValue(messageId, out var details) || string.IsNullOrWhiteSpace(details.ContentXml))
+            return null;
+
+        try
+        {
+            var names = new HashSet<string>(localNames, StringComparer.OrdinalIgnoreCase);
+            var doc = XDocument.Parse(details.ContentXml);
+            var value = doc
+                .Descendants()
+                .FirstOrDefault(x => names.Contains(x.Name.LocalName))
+                ?.Value
+                ?.Trim();
+
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string GetTypeTitle(string type) => type switch
@@ -469,6 +657,8 @@ else if (company is not null)
         "ReceivingCreditorDemand" or "ReceivingCreditorDemand2" => "Уведомление о получении требований кредитора",
         "CreditorsDemandRegistered" => "Сообщение о включении заявленных требований в реестр требований кредиторов",
         "DemandAnnouncement" => "Извещение о возможности предъявления требований",
+        "CourtAssertAcceptance" => "Объявление о принятии арбитражным судом заявления",
+        "CourtAcceptanceStatement" => "Сведения о принятии заявления о признании должника банкротом",
         "InformationAboutBankruptcy" => "Информация о ходе конкурсного производства",
         "Final" or "Final2" => "Финальный отчет",
         _ => type
@@ -494,6 +684,8 @@ else if (company is not null)
     {
         return value.HasValue ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : "Нет данных";
     }
+
+    private sealed record BankruptcyGroup(string Title, string? CaseNumber, IReadOnlyList<EfrsbMessageDto> Items);
 }
 
 <style>
@@ -544,7 +736,7 @@ else if (company is not null)
         letter-spacing: .04em;
     }
 
-    .hero-title-row h1 {
+    .hero-card h1 {
         margin: 0;
         color: #f8fafc;
         font-size: 30px;
@@ -564,7 +756,7 @@ else if (company is not null)
         margin-top: 16px;
     }
 
-    .badge {
+    .status-pill {
         display: inline-flex;
         align-items: center;
         min-height: 26px;
@@ -576,37 +768,36 @@ else if (company is not null)
         white-space: nowrap;
     }
 
-    .badge-neutral {
+    .status-neutral {
         background: #334155;
         color: #f8fafc;
     }
 
-    .badge-success {
+    .status-success {
         background: #16a34a;
         color: #fff;
     }
 
-    .badge-danger {
+    .status-danger {
         background: #dc2626;
         color: #fff;
     }
 
-    .badge-warning {
+    .status-warning {
         background: #f59e0b;
         color: #111827;
     }
 
     .hero-actions {
-        flex: 0 0 auto;
+        flex: 0 1 560px;
         justify-content: flex-end;
-        max-width: 520px;
     }
 
     .btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 36px;
+        min-height: 38px;
         border: 0;
         border-radius: 8px;
         padding: 8px 14px;
@@ -694,6 +885,13 @@ else if (company is not null)
         line-height: 1.25;
     }
 
+    .section-subtitle {
+        margin-top: 8px;
+        color: #cbd5e1;
+        font-size: 15px;
+        font-weight: 700;
+    }
+
     .section-heading {
         display: flex;
         align-items: center;
@@ -706,51 +904,57 @@ else if (company is not null)
         text-align: right;
     }
 
-    .compact-identifiers {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
+    .identity-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 30px;
         margin-bottom: 18px;
     }
 
-    .info-pair {
-        border: 1px solid #334155;
-        border-radius: 10px;
-        background: #111827;
-        padding: 12px;
+    .identity-item {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        min-width: 160px;
     }
 
-    .info-label,
+    .identity-item span,
     .definition-label,
     .summary-label {
         color: #94a3b8;
         font-size: 13px;
     }
 
-    .info-value {
-        margin-top: 6px;
+    .identity-item strong {
         color: #f8fafc;
         font-size: 16px;
-        font-weight: 700;
     }
 
     .definition-list {
         display: flex;
         flex-direction: column;
+    }
+
+    .fedresurs-like {
         border-top: 1px solid #334155;
     }
 
     .definition-row {
         display: grid;
-        grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
-        gap: 20px;
+        grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+        gap: 24px;
         padding: 12px 0;
         border-bottom: 1px solid #334155;
+    }
+
+    .small-list .definition-row:first-child {
+        border-top: 1px solid #334155;
     }
 
     .definition-value {
         color: #e5e7eb;
         overflow-wrap: anywhere;
+        line-height: 1.45;
     }
 
     .publication-list {
@@ -786,13 +990,23 @@ else if (company is not null)
         white-space: nowrap;
     }
 
+    .publication-body {
+        min-width: 0;
+    }
+
     .publication-title {
         color: #e5e7eb;
         overflow-wrap: anywhere;
     }
 
+    .publication-meta {
+        margin-top: 4px;
+        color: #cbd5e1;
+        font-size: 13px;
+    }
+
     .publication-flags {
-        grid-column: 2;
+        margin-top: 8px;
     }
 
     .publication-flag {
@@ -803,6 +1017,18 @@ else if (company is not null)
         padding: 3px 8px;
         font-size: 12px;
         font-weight: 700;
+    }
+
+    .section-footer-link {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 14px;
+    }
+
+    .section-footer-link a {
+        color: #fb923c;
+        font-weight: 700;
+        text-decoration: none;
     }
 
     .bankruptcy-summary {
@@ -825,10 +1051,29 @@ else if (company is not null)
         color: #f8fafc;
     }
 
+    .bankruptcy-group {
+        padding-top: 16px;
+        margin-top: 16px;
+        border-top: 1px solid #475569;
+    }
+
+    .bankruptcy-group-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    .bankruptcy-group h3,
     .trade-group h3 {
-        margin: 0 0 10px;
+        margin: 0 0 6px;
         color: #f8fafc;
         font-size: 17px;
+    }
+
+    .case-number {
+        color: #93c5fd;
+        font-weight: 700;
     }
 
     .divider {
@@ -844,6 +1089,7 @@ else if (company is not null)
 
     .muted-block {
         margin: 10px 0 0;
+        line-height: 1.45;
     }
 
     .text-break {
@@ -872,7 +1118,7 @@ else if (company is not null)
     }
 
     @@media (max-width: 760px) {
-        .hero-title-row h1 {
+        .hero-card h1 {
             font-size: 24px;
         }
 
@@ -882,11 +1128,10 @@ else if (company is not null)
         }
 
         .btn,
-        .badge {
+        .status-pill {
             width: 100%;
         }
 
-        .compact-identifiers,
         .bankruptcy-summary,
         .section-nav {
             grid-template-columns: 1fr;
@@ -897,15 +1142,12 @@ else if (company is not null)
             grid-template-columns: 1fr;
         }
 
-        .publication-flags {
-            grid-column: 1;
-        }
-
         .publication-number {
             white-space: normal;
         }
 
-        .section-heading {
+        .section-heading,
+        .bankruptcy-group-head {
             align-items: flex-start;
             flex-direction: column;
         }
