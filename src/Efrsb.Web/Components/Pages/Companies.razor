@@ -7,7 +7,6 @@
 @using Efrsb.Contracts.Companies
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
-@using Microsoft.AspNetCore.Components.Web
 @using Microsoft.JSInterop
 
 @inject ICompanyTrackingService CompanyService
@@ -17,8 +16,11 @@
 <h1>Отслеживаемые компании</h1>
 
 <div class="card">
-    <input @bind="query" placeholder="ИНН / ОГРН / название / GUID" />
-    <button @onclick="Add">Добавить</button>
+    <div class="row-wrap">
+        <input @bind="query" @bind:event="oninput" placeholder="ИНН / ОГРН / название / GUID" disabled="@isBusy" />
+        <button @onclick="Add" disabled="@(isBusy || string.IsNullOrWhiteSpace(query))">Добавить</button>
+    </div>
+    <p class="muted">После добавления карточка компании и история публикаций автоматически подтягиваются из ЕФРСБ.</p>
 </div>
 
 @if (!string.IsNullOrWhiteSpace(error))
@@ -46,11 +48,9 @@ else
             <tr>
                 <th>Компания</th>
                 <th>ИНН / ОГРН</th>
-                <th>BankruptGuid</th>
                 <th>Непрочитанные</th>
                 <th>Загружено</th>
                 <th>Всего в ЕФРСБ</th>
-                <th>Первая публикация</th>
                 <th>Последняя публикация</th>
                 <th>Синхронизация</th>
                 <th>Действия</th>
@@ -60,20 +60,23 @@ else
             @foreach (var c in companies)
             {
                 <tr>
-                    <td>@(c.Name ?? c.SearchQuery)</td>
-                    <td>@c.Inn / @c.Ogrn</td>
-                    <td>@c.BankruptGuid</td>
+                    <td>
+                        <a href="@($"/companies/{c.Id}")" class="company-link">
+                            @(c.Name ?? c.SearchQuery)
+                        </a>
+                        @if (!string.IsNullOrWhiteSpace(c.BankruptGuid))
+                        {
+                            <div class="muted small">@c.BankruptGuid</div>
+                        }
+                    </td>
+                    <td>@DisplayPair(c.Inn, c.Ogrn)</td>
                     <td>@c.UnreadCount</td>
                     <td>@c.LoadedMessages</td>
                     <td>@c.TotalMessages</td>
-                    <td>@FormatDate(c.FirstMessageDate)</td>
                     <td>@FormatDate(c.LastMessageDate)</td>
                     <td>@FormatDate(c.LastSyncedAtUtc)</td>
                     <td class="actions-cell">
-                        <a href="@($"/companies/{c.Id}/messages")">Сообщения</a>
-                        <button @onclick="() => Sync(c.Id)">Обновить</button>
-                        <button @onclick="() => SyncHistory(c.Id)">Догрузить историю</button>
-                        <button class="danger" @onclick="() => Delete(c.Id)">Удалить</button>
+                        <button class="danger" @onclick="() => Delete(c.Id)" disabled="@isBusy">Удалить</button>
                     </td>
                 </tr>
             }
@@ -86,6 +89,7 @@ else
     private string query = string.Empty;
     private string? error;
     private string? status;
+    private bool isBusy;
 
     protected override async Task OnInitializedAsync()
     {
@@ -112,90 +116,33 @@ else
     private async Task Add()
     {
         error = null;
-        status = "Добавляем компанию...";
 
-        try
-        {
-            if (string.IsNullOrWhiteSpace(query))
-            {
-                status = null;
-                return;
-            }
-
-            var userId = await GetUserId();
-
-            await CompanyService.AddCompanyAsync(
-                userId,
-                query,
-                CancellationToken.None);
-
-            query = string.Empty;
-            status = "Компания добавлена.";
-
-            await Load();
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            status = null;
-        }
-    }
-
-    private async Task Sync(Guid id)
-    {
-        error = null;
-        status = "Синхронизация свежих сообщений...";
-
-        try
-        {
-            var userId = await GetUserId();
-
-            var loaded = await CompanyService.SyncCompanyAsync(
-                userId,
-                id,
-                CancellationToken.None);
-
-            status = $"Синхронизация завершена. Новых сообщений: {loaded}.";
-
-            await Load();
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            status = null;
-        }
-    }
-
-    private async Task SyncHistory(Guid id)
-    {
-        error = null;
-
-        var confirmed = await JS.InvokeAsync<bool>(
-            "confirm",
-            "Догрузить всю историю сообщений по компании? Это может занять некоторое время.");
-
-        if (!confirmed)
+        if (string.IsNullOrWhiteSpace(query))
             return;
 
-        status = "Догружаем историю сообщений...";
+        isBusy = true;
+        status = "Добавляем компанию и загружаем данные из ЕФРСБ...";
 
         try
         {
             var userId = await GetUserId();
+            var company = await CompanyService.AddCompanyAsync(userId, query.Trim(), CancellationToken.None);
 
-            var loaded = await CompanyService.SyncCompanyHistoryAsync(
-                userId,
-                id,
-                CancellationToken.None);
+            status = "Компания добавлена. Догружаем историю публикаций...";
+            var loaded = await CompanyService.SyncCompanyHistoryAsync(userId, company.Id, CancellationToken.None);
 
-            status = $"История догружена. Новых сообщений: {loaded}.";
-
+            query = string.Empty;
+            status = $"Компания добавлена. Загружено новых сообщений: {loaded}.";
             await Load();
         }
         catch (Exception ex)
         {
             error = ex.Message;
             status = null;
+        }
+        finally
+        {
+            isBusy = false;
         }
     }
 
@@ -210,19 +157,15 @@ else
         if (!confirmed)
             return;
 
+        isBusy = true;
         status = "Удаляем компанию...";
 
         try
         {
             var userId = await GetUserId();
-
-            await CompanyService.DeleteCompanyAsync(
-                userId,
-                id,
-                CancellationToken.None);
+            await CompanyService.DeleteCompanyAsync(userId, id, CancellationToken.None);
 
             status = "Компания удалена.";
-
             await Load();
         }
         catch (Exception ex)
@@ -230,6 +173,17 @@ else
             error = ex.Message;
             status = null;
         }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private static string DisplayPair(string? left, string? right)
+    {
+        var a = string.IsNullOrWhiteSpace(left) ? "-" : left;
+        var b = string.IsNullOrWhiteSpace(right) ? "-" : right;
+        return $"{a} / {b}";
     }
 
     private static string FormatDate(DateTime? value)

@@ -1,0 +1,362 @@
+﻿@page "/companies/{CompanyId:guid}"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@attribute [Authorize]
+
+@using System.Security.Claims
+@using Efrsb.Application.Abstractions
+@using Efrsb.Contracts.Companies
+@using Efrsb.Contracts.Messages
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.JSInterop
+
+@inject ICompanyTrackingService CompanyService
+@inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
+
+@if (company is null && string.IsNullOrWhiteSpace(error))
+{
+    <p>Загрузка...</p>
+}
+else if (!string.IsNullOrWhiteSpace(error))
+{
+    <p class="error">@error</p>
+    <p><a href="/companies">← К компаниям</a></p>
+}
+else if (company is not null)
+{
+    <div class="company-card-header card">
+        <a href="/companies">← К компаниям</a>
+        <h1>@Display(company.Name ?? company.SearchQuery)</h1>
+        <div class="row-wrap">
+            <span class="badge">Юридическое лицо</span>
+            @if (IsBankrupt)
+            {
+                <span class="badge danger-badge">Есть сведения о банкротстве</span>
+            }
+            @if (company.UnreadCount > 0)
+            {
+                <span class="badge">Непрочитанные: @company.UnreadCount</span>
+            }
+        </div>
+        <div class="row-wrap actions-cell">
+            <a href="@($"/companies/{company.Id}/messages")">Все сообщения</a>
+            <button @onclick="Sync" disabled="@isBusy">Обновить</button>
+            <button @onclick="SyncHistory" disabled="@isBusy">Догрузить историю</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(status))
+    {
+        <p class="muted">@status</p>
+    }
+
+    <div class="company-card-layout">
+        <aside class="card company-card-nav">
+            <a href="#general">Общая информация</a>
+            <a href="#publications">Публикации</a>
+            <a href="#encumbrances">Обременения</a>
+            <a href="#eio">ЕИО</a>
+            <a href="#sro-info">Сведения о СРО</a>
+            <a href="#sro-member">Членство в СРО</a>
+            <a href="#licenses">Лицензии</a>
+            <a href="#assets">Стоимость чистых активов</a>
+            <a href="#reorg">Сведения о реорганизации</a>
+            <a href="#bankruptcy">Сведения о банкротстве</a>
+            <a href="#trades">Торги</a>
+        </aside>
+
+        <main class="company-card-content">
+            <section id="general" class="card company-section">
+                <h2>Общая информация</h2>
+                <dl class="info-grid">
+                    <dt>ИНН</dt>
+                    <dd>@Display(company.Inn)</dd>
+                    <dt>ОГРН</dt>
+                    <dd>@Display(company.Ogrn)</dd>
+                    <dt>BankruptGuid</dt>
+                    <dd>@Display(company.BankruptGuid)</dd>
+                    <dt>Наименование</dt>
+                    <dd>@Display(company.Name ?? company.SearchQuery)</dd>
+                    <dt>Статус</dt>
+                    <dd>@(IsBankrupt ? "Есть признаки процедуры банкротства по публикациям ЕФРСБ" : "Нет признаков банкротства в загруженных публикациях")</dd>
+                    <dt>Первая публикация</dt>
+                    <dd>@FormatDate(company.FirstMessageDate)</dd>
+                    <dt>Последняя публикация</dt>
+                    <dd>@FormatDate(company.LastMessageDate)</dd>
+                    <dt>Последняя синхронизация</dt>
+                    <dd>@FormatDate(company.LastSyncedAtUtc)</dd>
+                </dl>
+            </section>
+
+            <section id="publications" class="card company-section">
+                <h2>Публикации</h2>
+                @RenderMessageList(Messages.Take(10).ToList(), "Публикаций пока нет.")
+            </section>
+
+            <section id="encumbrances" class="card company-section">
+                <h2>Обременения</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="eio" class="card company-section">
+                <h2>ЕИО</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="sro-info" class="card company-section">
+                <h2>Сведения о СРО</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="sro-member" class="card company-section">
+                <h2>Членство в СРО</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="licenses" class="card company-section">
+                <h2>Лицензии</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="assets" class="card company-section">
+                <h2>Стоимость чистых активов</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="reorg" class="card company-section">
+                <h2>Сведения о реорганизации</h2>
+                <p>Нет данных</p>
+            </section>
+
+            <section id="bankruptcy" class="card company-section">
+                <h2>Сведения о банкротстве</h2>
+                @if (BankruptcyMessages.Count == 0)
+                {
+                    <p>Нет данных</p>
+                }
+                else
+                {
+                    <p class="badge danger-badge">Банкротные публикации найдены</p>
+                    @RenderMessageList(BankruptcyMessages.Take(10).ToList(), "Нет данных")
+                }
+            </section>
+
+            <section id="trades" class="card company-section">
+                <h2>Торги</h2>
+                <h3>Продажа имущества при банкротстве</h3>
+                @RenderMessageList(TradeMessages.Take(10).ToList(), "Нет данных")
+                <hr />
+                <h3>Залоговое имущество</h3>
+                <p>Нет данных</p>
+                <hr />
+                <h3>Права требований</h3>
+                <p>Нет данных</p>
+            </section>
+        </main>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public Guid CompanyId { get; set; }
+
+    private TrackedCompanyDto? company;
+    private IReadOnlyList<EfrsbMessageDto>? messages;
+    private string? error;
+    private string? status;
+    private bool isBusy;
+
+    private IReadOnlyList<EfrsbMessageDto> Messages =>
+        messages?.OrderByDescending(m => m.DatePublish).ToList() ?? [];
+
+    private IReadOnlyList<EfrsbMessageDto> BankruptcyMessages =>
+        Messages.Where(m => BankruptcyTypes.Contains(m.Type) || m.Type.Contains("Bankruptcy", StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private IReadOnlyList<EfrsbMessageDto> TradeMessages =>
+        Messages.Where(m => TradeTypes.Contains(m.Type) || m.Type.Contains("Auction", StringComparison.OrdinalIgnoreCase) || m.Type.Contains("Trade", StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private bool IsBankrupt => BankruptcyMessages.Count > 0;
+
+    private static readonly HashSet<string> BankruptcyTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ArbitralDecree",
+        "CourtAcceptanceStatement",
+        "CourtAssertAcceptance",
+        "StartOfExtrajudicialBankruptcy",
+        "TerminationOfExtrajudicialBankruptcy",
+        "CompletionOfExtrajudicialBankruptcy",
+        "InformationAboutBankruptcy",
+        "Final",
+        "Final2"
+    };
+
+    private static readonly HashSet<string> TradeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Auction",
+        "Auction2",
+        "ChangeAuction",
+        "ChangeAuction2",
+        "TradeResult",
+        "SaleContractResult",
+        "SaleContractResult2",
+        "SaleOrderPledgedProperty",
+        "SaleOrderPledgedProperty2",
+        "CancelAuctionTradeResult"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task<Guid> GetUserId()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Пользователь не авторизован.");
+
+        return Guid.Parse(value);
+    }
+
+    private async Task Load()
+    {
+        error = null;
+
+        try
+        {
+            var userId = await GetUserId();
+            var companies = await CompanyService.GetCompaniesAsync(userId, CancellationToken.None);
+            company = companies.FirstOrDefault(x => x.Id == CompanyId);
+
+            if (company is null)
+            {
+                error = "Компания не найдена или нет доступа.";
+                return;
+            }
+
+            messages = await CompanyService.GetMessagesAsync(userId, CompanyId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task Sync()
+    {
+        error = null;
+        isBusy = true;
+        status = "Синхронизация свежих сообщений...";
+
+        try
+        {
+            var userId = await GetUserId();
+            var loaded = await CompanyService.SyncCompanyAsync(userId, CompanyId, CancellationToken.None);
+            status = $"Синхронизация завершена. Новых сообщений: {loaded}.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task SyncHistory()
+    {
+        error = null;
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Догрузить всю историю сообщений по компании? Это может занять некоторое время.");
+
+        if (!confirmed)
+            return;
+
+        isBusy = true;
+        status = "Догружаем историю сообщений...";
+
+        try
+        {
+            var userId = await GetUserId();
+            var loaded = await CompanyService.SyncCompanyHistoryAsync(userId, CompanyId, CancellationToken.None);
+            status = $"История догружена. Новых сообщений: {loaded}.";
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            status = null;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private RenderFragment RenderMessageList(IReadOnlyList<EfrsbMessageDto> items, string emptyText) => builder =>
+    {
+        var seq = 0;
+
+        if (items.Count == 0)
+        {
+            builder.OpenElement(seq++, "p");
+            builder.AddContent(seq++, emptyText);
+            builder.CloseElement();
+            return;
+        }
+
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", "publication-list");
+
+        foreach (var item in items)
+        {
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", "publication-row");
+
+            builder.OpenElement(seq++, "a");
+            builder.AddAttribute(seq++, "href", $"/messages/{item.Id}");
+            builder.AddContent(seq++, $"{item.Number} от {item.DatePublish.ToLocalTime():dd.MM.yyyy}");
+            builder.CloseElement();
+
+            builder.OpenElement(seq++, "span");
+            builder.AddContent(seq++, GetTypeTitle(item.Type));
+            builder.CloseElement();
+
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    };
+
+    private static string GetTypeTitle(string type) => type switch
+    {
+        "ArbitralDecree" => "Сообщение о судебном акте",
+        "Auction" or "Auction2" => "Объявление о проведении торгов",
+        "ChangeAuction" or "ChangeAuction2" => "Сообщение об изменении объявления о проведении торгов",
+        "TradeResult" => "Сообщение о результатах торгов",
+        "Meeting" or "Meeting2" => "Сообщение о собрании кредиторов",
+        "MeetingResult" => "Сообщение о результатах проведения собрания кредиторов",
+        "Annul" => "Аннулирование ранее опубликованного сообщения",
+        "SaleContractResult" or "SaleContractResult2" => "Сведения о заключении договора купли-продажи",
+        "DealInvalidResult" or "DealInvalidResult2" => "Результаты рассмотрения/пересмотра заявлений об оспаривании сделок",
+        "Final" or "Final2" => "Финальный отчет",
+        _ => type
+    };
+
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "Нет данных" : value;
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue
+            ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm")
+            : "Нет данных";
+    }
+}
