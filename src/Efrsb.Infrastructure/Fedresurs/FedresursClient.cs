@@ -161,6 +161,100 @@ public sealed class FedresursClient : IFedresursClient
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
+    public async Task<FedresursPagedResponse<FedresursReportItem>> GetReportsAsync(
+        string? bankruptGuid,
+        DateTime dateFrom,
+        DateTime dateTo,
+        int limit = 1000,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAuthorizedAsync(cancellationToken);
+
+        limit = Math.Clamp(limit, 1, 1000);
+        offset = Math.Clamp(offset, 0, 1_000_000);
+
+        if ((dateTo - dateFrom).TotalDays > 31)
+            dateFrom = dateTo.AddDays(-31);
+
+        var parts = new List<string>
+        {
+            $"datePublishBegin={Uri.EscapeDataString("gte:" + dateFrom.ToString("yyyy-MM-ddTHH:mm:ss"))}",
+            $"datePublishEnd={Uri.EscapeDataString("lte:" + dateTo.ToString("yyyy-MM-ddTHH:mm:ss"))}",
+            "includeContent=true",
+            "includeBankruptInfo=true",
+            $"limit={limit}",
+            $"offset={offset}",
+            "sort=DatePublish:desc"
+        };
+
+        if (!string.IsNullOrWhiteSpace(bankruptGuid))
+            parts.Add($"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}");
+
+        return await GetJsonAsync<FedresursPagedResponse<FedresursReportItem>>(
+            "v1/reports?" + string.Join('&', parts),
+            cancellationToken) ?? new FedresursPagedResponse<FedresursReportItem>();
+    }
+
+    public async Task<FedresursPagedResponse<FedresursReportItem>> GetReportsMetadataAsync(
+        string bankruptGuid,
+        string sort,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAuthorizedAsync(cancellationToken);
+
+        var parts = new List<string>
+        {
+            $"bankruptGUID={Uri.EscapeDataString(bankruptGuid)}",
+            "includeContent=false",
+            "includeBankruptInfo=false",
+            "limit=1",
+            "offset=0",
+            $"sort={Uri.EscapeDataString(sort)}"
+        };
+
+        return await GetJsonAsync<FedresursPagedResponse<FedresursReportItem>>(
+            "v1/reports?" + string.Join('&', parts),
+            cancellationToken) ?? new FedresursPagedResponse<FedresursReportItem>();
+    }
+
+    public async Task<FedresursReportItem?> GetReportAsync(
+        string guid,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAuthorizedAsync(cancellationToken);
+
+        var response = await _httpClient.GetAsync(
+            $"v1/reports/{Uri.EscapeDataString(guid)}",
+            cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<FedresursReportItem>(
+            cancellationToken: cancellationToken);
+    }
+
+    public async Task<byte[]> DownloadReportFilesArchiveAsync(
+        string guid,
+        bool onlySafe = true,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAuthorizedAsync(cancellationToken);
+
+        var response = await _httpClient.GetAsync(
+            $"v1/reports/{Uri.EscapeDataString(guid)}/files/archive?onlySafe={onlySafe.ToString().ToLowerInvariant()}",
+            cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return Array.Empty<byte>();
+
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
     private async Task EnsureAuthorizedAsync(CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(_jwt) && DateTime.UtcNow < _jwtExpiresAtUtc)

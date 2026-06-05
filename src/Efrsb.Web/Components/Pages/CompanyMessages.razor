@@ -137,7 +137,7 @@ else if (company is not null)
 
             builder.OpenElement(seq++, "div");
             builder.AddAttribute(seq++, "class", "publication-title");
-            builder.AddContent(seq++, GetTypeTitle(item.Type));
+            builder.AddContent(seq++, GetTypeTitle(item.Type, item.CourtDecisionType));
             builder.CloseElement();
 
             if (item.HasViolation == true || item.IsLocked || item.IsAnnulled || !item.IsRead)
@@ -172,26 +172,120 @@ else if (company is not null)
         builder.CloseElement();
     }
 
-    private static string GetTypeTitle(string type) => type switch
+    private static string GetTypeTitle(string type, string? detail = null)
     {
-        "ArbitralDecree" => "Сообщение о судебном акте",
-        "Auction" or "Auction2" => "Объявление о проведении торгов",
-        "ChangeAuction" or "ChangeAuction2" => "Сообщение об изменении объявления о проведении торгов",
-        "TradeResult" => "Сообщение о результатах торгов",
-        "Meeting" or "Meeting2" => "Сообщение о собрании кредиторов",
-        "MeetingResult" => "Сообщение о результатах проведения собрания кредиторов",
-        "Annul" => "Аннулирование ранее опубликованного сообщения",
-        "SaleContractResult" or "SaleContractResult2" => "Сведения о заключении договора купли-продажи",
-        "DealInvalidResult" or "DealInvalidResult2" => "Результаты рассмотрения/пересмотра заявлений об оспаривании сделок",
-        "ReceivingCreditorDemand" or "ReceivingCreditorDemand2" => "Уведомление о получении требований кредитора",
-        "CreditorsDemandRegistered" => "Сообщение о включении заявленных требований в реестр требований кредиторов",
-        "DemandAnnouncement" => "Извещение о возможности предъявления требований",
-        "CourtAssertAcceptance" => "Объявление о принятии арбитражным судом заявления",
-        "CourtAcceptanceStatement" => "Сведения о принятии заявления о признании должника банкротом",
-        "InformationAboutBankruptcy" => "Информация о ходе конкурсного производства",
-        "Final" or "Final2" => "Финальный отчет",
-        _ => type
+        if (IsReportType(type))
+        {
+            var reportType = type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase)
+                ? type["Report:".Length..]
+                : type;
+
+            var reportTitle = reportType switch
+            {
+                "Final" or "Final2" => "Финальный отчет",
+                "Annulment" or "Annulment2" => "Аннулирование ранее опубликованного отчета",
+                "SignificantEvent" => "Отчет по существенным фактам",
+                "Periodic" => "Периодический отчет",
+                _ => reportType
+            };
+
+            var procedureTitle = GetProcedureTypeTitle(detail);
+            return string.IsNullOrWhiteSpace(procedureTitle)
+                ? reportTitle
+                : $"{reportTitle}. {procedureTitle}";
+        }
+
+        var title = type switch
+        {
+            "ArbitralDecree" => "Сообщение о судебном акте",
+            "Auction" or "Auction2" => "Объявление о проведении торгов",
+            "ChangeAuction" or "ChangeAuction2" => "Сообщение об изменении объявления о проведении торгов",
+            "TradeResult" => "Сообщение о результатах торгов",
+            "Meeting" or "Meeting2" => "Сообщение о собрании кредиторов",
+            "MeetingResult" => "Сообщение о результатах проведения собрания кредиторов",
+            "Committee" or "Committee2" => "Уведомление о проведении комитета кредиторов",
+            "CommitteeResult" => "Сообщение о результатах проведения комитета кредиторов",
+            "Annul" => "Аннулирование ранее опубликованного сообщения",
+            "SaleContractResult" or "SaleContractResult2" => "Сведения о заключении договора купли-продажи",
+            "PropertyInventoryResult" => "Сведения о результатах инвентаризации имущества должника",
+            "PropertyEvaluationReport" or "AssessmentReport" => "Отчет оценщика об оценке имущества должника",
+            "DealInvalid" or "DealInvalid2" => "Заявление о признании сделки должника недействительной",
+            "DealInvalidResult" or "DealInvalidResult2" => "Результаты рассмотрения/пересмотра заявлений об оспаривании сделок",
+            "DeclarationPersonDamages" => "Заявление о привлечении контролирующих должника лиц, а также иных лиц, к ответственности в виде возмещения убытков",
+            "ActPersonDamages" or "ActReviewPersonDamages" => "Судебный акт по заявлению о привлечении к ответственности в виде возмещения убытков",
+            "DeclarationPersonSubsidiary" => "Заявление о привлечении контролирующих должника лиц к субсидиарной ответственности",
+            "ActPersonSubsidiary" or "ActPersonSubsidiary2" => "Судебный акт по заявлению о привлечении к субсидиарной ответственности",
+            "ActReviewPersonSubsidiary" or "ActReviewPersonSubsidiary2" => "Судебный акт по пересмотру заявления о привлечении к субсидиарной ответственности",
+            "ReceivingCreditorDemand" or "ReceivingCreditorDemand2" => "Уведомление о получении требований кредитора",
+            "CreditorsDemandRegistered" => "Сообщение о включении заявленных требований в реестр требований кредиторов",
+            "DemandAnnouncement" => "Извещение о возможности предъявления требований",
+            "CourtAssertAcceptance" => "Объявление о принятии арбитражным судом заявления",
+            "CourtAcceptanceStatement" => "Сведения о принятии заявления о признании должника банкротом",
+            "InformationAboutBankruptcy" => "Информация о ходе конкурсного производства",
+            "MeetingWorker" or "MeetingWorker2" => "Уведомление о проведении собрания работников, бывших работников должника",
+            "MeetingWorkerResult" => "Сведения о решениях, принятых собранием работников, бывших работников должника",
+            "MeetingParticipantsBuilding" or "MeetingParticipantsBuilding2" => "Уведомление о проведении собрания участников строительства",
+            "MeetingPartBuildResult" => "Сообщение о результатах проведения собрания участников строительства",
+            "StartOfExtrajudicialBankruptcy" => "Сообщение о возбуждении процедуры внесудебного банкротства гражданина",
+            "TerminationOfExtrajudicialBankruptcy" => "Сообщение о прекращении процедуры внесудебного банкротства гражданина",
+            "CompletionOfExtrajudicialBankruptcy" => "Сообщение о завершении процедуры внесудебного банкротства гражданина",
+            "Final" or "Final2" => "Финальный отчет",
+            _ => type
+        };
+
+        var courtDecisionTitle = GetCourtDecisionTypeTitle(detail);
+        return type.Equals("ArbitralDecree", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(courtDecisionTitle)
+            ? $"{title}. {courtDecisionTitle}"
+            : title;
+    }
+
+    private static string? GetCourtDecisionTypeTitle(string? type) => type switch
+    {
+        "ExternalManagement" => "о введении внешнего управления",
+        "ChangeCourtAct" => "об отмене или изменении судебных актов",
+        "LegalCaseResume" => "о возобновлении производства по делу о несостоятельности (банкротстве)",
+        "ArbitrManagerApproval" => "об утверждении арбитражного управляющего",
+        "ArbitrManagerRelease" => "об освобождении или отстранении арбитражного управляющего",
+        "Receivership" => "о признании должника банкротом и открытии конкурсного производства",
+        "LegalCaseTermination" => "о прекращении производства по делу",
+        "FinancialRecovery" => "о введении финансового оздоровления",
+        "BankruptcyRefusal" => "об отказе в признании должника банкротом",
+        "Observation" => "о введении наблюдения",
+        "OtherAct" => "Другие судебные акты",
+        "OtherDefinition" => "Другие определения",
+        "ThirdPartyPayoffRequestApproval" => "об удовлетворении заявлений третьих лиц о намерении погасить обязательства должника",
+        "DebtRestructuring" => "о признании обоснованным заявления о признании гражданина банкротом и введении реструктуризации его долгов",
+        "PropertySale" => "о признании гражданина банкротом и введении реализации имущества гражданина",
+        "DebtRestructuringPlan" => "об утверждении плана реструктуризации долгов гражданина",
+        "DebtRestructuringComplete" => "о завершении реструктуризации долгов гражданина",
+        "ArbitrManagerActionsIllegal" => "о признании действий арбитражного управляющего незаконными",
+        "ArbitrManagerLossesRecovery" => "о взыскании с арбитражного управляющего убытков",
+        "ObligationsDischargeRefusal" => "о неприменении правила об освобождении от исполнения обязательств",
+        "PropertySaleComplete" => "о завершении реализации имущества гражданина",
+        "DeveloperBankruptcy" => "о применении правил банкротства застройщиков",
+        "CaseTransfer" => "о передаче дела на рассмотрение другого арбитражного суда",
+        "LegalCaseEnd" => "о завершении конкурсного производства",
+        "ExtensionProcedure" => "о продлении срока процедуры",
+        "ChangeArbitralDecree" => "об изменении судебного акта",
+        "CancelArbitralDecree" => "об отмене судебного акта",
+        _ => null
     };
+
+    private static string? GetProcedureTypeTitle(string? type) => type switch
+    {
+        "FinancialRecovery" => "Финансовое оздоровление",
+        "ExternalManagement" => "Внешнее управление",
+        "Tender" => "Конкурсное производство",
+        "Watching" => "Наблюдение",
+        "CitizenAssetsDisposal" => "Реализация имущества гражданина",
+        "CitizenDebtRestructuring" => "Реструктуризация долгов гражданина",
+        _ => null
+    };
+
+    private static bool IsReportType(string type)
+    {
+        return type.StartsWith("Report", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string DisplayCompanyName(TrackedCompanyDto company)
     {

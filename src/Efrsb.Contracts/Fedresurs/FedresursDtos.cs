@@ -27,6 +27,21 @@ public sealed class FedresursMessageItem
     public FedresursBankruptItem? BankruptInfo { get; set; }
 }
 
+
+public sealed class FedresursReportItem
+{
+    public string Guid { get; set; } = string.Empty;
+    public string? BankruptGuid { get; set; }
+    public string? AnnulmentReportGuid { get; set; }
+    public string Number { get; set; } = string.Empty;
+    public DateTime DatePublish { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public string? ProcedureType { get; set; }
+    public string? Content { get; set; }
+    public string? LockReason { get; set; }
+    public FedresursBankruptItem? BankruptInfo { get; set; }
+}
+
 public sealed class FedresursBankruptItem
 {
     [JsonPropertyName("guid")]

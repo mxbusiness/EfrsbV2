@@ -171,7 +171,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
             var from = company.LastSyncedAtUtc?.AddDays(-2) ?? DateTime.UtcNow.AddDays(-31);
             var to = DateTime.UtcNow;
 
-            var loaded = await SyncMessagesRangeAsync(
+            var loaded = await SyncPublicationsRangeAsync(
                 userId,
                 company,
                 from,
@@ -239,7 +239,7 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                 if (to > finalTo)
                     to = finalTo;
 
-                totalLoaded += await SyncMessagesRangeAsync(
+                totalLoaded += await SyncPublicationsRangeAsync(
                     userId,
                     company,
                     from,
@@ -289,7 +289,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     .FirstOrDefault(),
                 x.HasViolation,
                 x.IsLocked,
-                x.IsAnnulled))
+                x.IsAnnulled,
+                x.CourtDecisionType))
             .ToListAsync(cancellationToken);
     }
 
@@ -324,7 +325,8 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
                     f.Id,
                     f.FileName,
                     f.SizeBytes))
-                .ToList());
+                .ToList(),
+            message.CourtDecisionType);
     }
 
     public async Task MarkMessageReadAsync(
@@ -354,6 +356,19 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<int> SyncPublicationsRangeAsync(
+        Guid userId,
+        TrackedCompany company,
+        DateTime from,
+        DateTime to,
+        CancellationToken cancellationToken)
+    {
+        var loaded = 0;
+        loaded += await SyncMessagesRangeAsync(userId, company, from, to, cancellationToken);
+        loaded += await SyncReportsRangeAsync(userId, company, from, to, cancellationToken);
+        return loaded;
     }
 
     private async Task<int> SyncMessagesRangeAsync(
@@ -432,6 +447,82 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         return loaded;
     }
 
+    private async Task<int> SyncReportsRangeAsync(
+        Guid userId,
+        TrackedCompany company,
+        DateTime from,
+        DateTime to,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(company.BankruptGuid))
+            return 0;
+
+        var loaded = 0;
+        var offset = 0;
+
+        while (true)
+        {
+            var page = await _fedresurs.GetReportsAsync(
+                company.BankruptGuid,
+                from,
+                to,
+                1000,
+                offset,
+                cancellationToken);
+
+            foreach (var item in page.PageData)
+            {
+                var exists = await _db.EfrsbMessages.AnyAsync(
+                    x => x.FedresursGuid == item.Guid && x.TrackedCompanyId == company.Id,
+                    cancellationToken);
+
+                if (exists)
+                    continue;
+
+                var details = await _fedresurs.GetReportAsync(
+                    item.Guid,
+                    cancellationToken) ?? item;
+
+                var report = new EfrsbMessage
+                {
+                    TrackedCompanyId = company.Id,
+                    FedresursGuid = item.Guid,
+                    BankruptGuid = item.BankruptGuid,
+                    Number = item.Number,
+                    DatePublish = NormalizeFedresursDate(item.DatePublish),
+                    Type = BuildReportType(item.Type),
+                    CourtDecisionType = item.ProcedureType,
+                    ContentXml = details.Content ?? item.Content,
+                    HasViolation = false,
+                    IsLocked = !string.IsNullOrWhiteSpace(item.LockReason),
+                    LockReason = item.LockReason,
+                    IsAnnulled = !string.IsNullOrWhiteSpace(item.AnnulmentReportGuid)
+                };
+
+                _db.EfrsbMessages.Add(report);
+                await _db.SaveChangesAsync(cancellationToken);
+
+                await SaveFilesArchiveAsync(report, cancellationToken);
+
+                _db.UserMessageStates.Add(new UserMessageState
+                {
+                    UserId = userId,
+                    EfrsbMessageId = report.Id,
+                    IsRead = false
+                });
+
+                loaded++;
+            }
+
+            if (offset + page.PageData.Count >= page.Total || page.PageData.Count == 0)
+                break;
+
+            offset += page.PageData.Count;
+        }
+
+        return loaded;
+    }
+
     private async Task RefreshMetadataAsync(
         TrackedCompany company,
         CancellationToken cancellationToken)
@@ -439,21 +530,48 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         if (string.IsNullOrWhiteSpace(company.BankruptGuid))
             return;
 
-        var firstPage = await _fedresurs.GetMessagesMetadataAsync(
+        var firstMessagesPage = await _fedresurs.GetMessagesMetadataAsync(
             company.BankruptGuid,
             "DatePublish:asc",
             cancellationToken);
 
-        var lastPage = await _fedresurs.GetMessagesMetadataAsync(
+        var lastMessagesPage = await _fedresurs.GetMessagesMetadataAsync(
             company.BankruptGuid,
             "DatePublish:desc",
             cancellationToken);
 
-        company.TotalMessages = lastPage.Total;
-        company.FirstMessageDate = NormalizeNullableFedresursDate(
-            firstPage.PageData.FirstOrDefault()?.DatePublish);
-        company.LastMessageDate = NormalizeNullableFedresursDate(
-            lastPage.PageData.FirstOrDefault()?.DatePublish);
+        var firstReportsPage = await _fedresurs.GetReportsMetadataAsync(
+            company.BankruptGuid,
+            "DatePublish:asc",
+            cancellationToken);
+
+        var lastReportsPage = await _fedresurs.GetReportsMetadataAsync(
+            company.BankruptGuid,
+            "DatePublish:desc",
+            cancellationToken);
+
+        company.TotalMessages = lastMessagesPage.Total + lastReportsPage.Total;
+
+        var firstDates = new[]
+            {
+                firstMessagesPage.PageData.FirstOrDefault()?.DatePublish,
+                firstReportsPage.PageData.FirstOrDefault()?.DatePublish
+            }
+            .Where(x => x.HasValue)
+            .Select(x => NormalizeFedresursDate(x!.Value))
+            .ToList();
+
+        var lastDates = new[]
+            {
+                lastMessagesPage.PageData.FirstOrDefault()?.DatePublish,
+                lastReportsPage.PageData.FirstOrDefault()?.DatePublish
+            }
+            .Where(x => x.HasValue)
+            .Select(x => NormalizeFedresursDate(x!.Value))
+            .ToList();
+
+        company.FirstMessageDate = firstDates.Count == 0 ? null : firstDates.Min();
+        company.LastMessageDate = lastDates.Count == 0 ? null : lastDates.Max();
         company.LastMetadataSyncAtUtc = DateTime.UtcNow;
     }
 
@@ -556,10 +674,15 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
     {
         try
         {
-            var archiveBytes = await _fedresurs.DownloadMessageFilesArchiveAsync(
-                message.FedresursGuid,
-                true,
-                cancellationToken);
+            var archiveBytes = IsReportType(message.Type)
+                ? await _fedresurs.DownloadReportFilesArchiveAsync(
+                    message.FedresursGuid,
+                    true,
+                    cancellationToken)
+                : await _fedresurs.DownloadMessageFilesArchiveAsync(
+                    message.FedresursGuid,
+                    true,
+                    cancellationToken);
 
             if (archiveBytes.Length == 0)
                 return;
@@ -597,6 +720,18 @@ public sealed class CompanyTrackingService : ICompanyTrackingService
         {
             // Файлы не должны ломать синхронизацию сообщения.
         }
+    }
+
+    private static string BuildReportType(string type)
+    {
+        return string.IsNullOrWhiteSpace(type)
+            ? "Report"
+            : $"Report:{type.Trim()}";
+    }
+
+    private static bool IsReportType(string type)
+    {
+        return type.StartsWith("Report", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool NeedsIdentityRefresh(TrackedCompany company)
