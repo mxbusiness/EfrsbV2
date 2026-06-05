@@ -51,4 +51,18 @@ public interface IFedresursClient
         string guid,
         bool onlySafe = true,
         CancellationToken cancellationToken = default);
+
+    Task<FedresursPublicCompanyItem?> FindPublicCompanyAsync(
+        string? inn,
+        string? ogrn,
+        string? name,
+        CancellationToken cancellationToken = default);
+
+    Task<FedresursPublicPublicationResponse> GetPublicCompanyPublicationsAsync(
+        string publicCompanyGuid,
+        DateTime? dateFrom = null,
+        DateTime? dateTo = null,
+        int limit = 500,
+        int offset = 0,
+        CancellationToken cancellationToken = default);
 }

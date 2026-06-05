@@ -585,25 +585,43 @@ else if (company is not null)
 
     private static bool IsBankruptcyMessage(EfrsbMessageDto message)
     {
+        var title = GetTypeTitle(message.Type, message.CourtDecisionType);
+
         return IsReportType(message.Type)
             || BankruptcyTypes.Contains(message.Type)
             || message.Type.Contains("Bankruptcy", StringComparison.OrdinalIgnoreCase)
             || message.Type.Contains("Creditor", StringComparison.OrdinalIgnoreCase)
-            || message.Type.Contains("Demand", StringComparison.OrdinalIgnoreCase);
+            || message.Type.Contains("Demand", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("банкрот", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("требован", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTradeMessage(EfrsbMessageDto message)
     {
+        var title = GetTypeTitle(message.Type, message.CourtDecisionType);
+
         return TradeTypes.Contains(message.Type)
             || message.Type.Contains("Auction", StringComparison.OrdinalIgnoreCase)
             || message.Type.Contains("Trade", StringComparison.OrdinalIgnoreCase)
-            || message.Type.Contains("Sale", StringComparison.OrdinalIgnoreCase);
+            || message.Type.Contains("Sale", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("торг", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("продаж", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetBankruptcyGroupTitle(EfrsbMessageDto item)
     {
         if (IsReportType(item.Type))
             return "Конкурсное производство";
+
+        var title = GetTypeTitle(item.Type, item.CourtDecisionType);
+        if (title.Contains("намерен", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("намерени", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("обратиться в суд с заявлением о банкротстве", StringComparison.OrdinalIgnoreCase))
+            return "Сообщения о намерении";
+
+        if (title.Contains("требован", StringComparison.OrdinalIgnoreCase)
+            || title.Contains("реестр требований", StringComparison.OrdinalIgnoreCase))
+            return "Требования кредиторов";
 
         return item.Type switch
         {
@@ -652,6 +670,11 @@ else if (company is not null)
 
     private static string GetTypeTitle(string type, string? detail = null)
     {
+        if (IsPublicType(type))
+            return !string.IsNullOrWhiteSpace(detail)
+                ? detail
+                : type["Public:".Length..];
+
         if (IsReportType(type))
         {
             var reportType = type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase)
@@ -763,6 +786,11 @@ else if (company is not null)
     private static bool IsReportType(string type)
     {
         return type.StartsWith("Report", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPublicType(string type)
+    {
+        return type.StartsWith("Public:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string DisplayCompanyName(TrackedCompanyDto company)

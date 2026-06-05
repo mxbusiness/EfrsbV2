@@ -1,68 +1,83 @@
 @page "/messages/{MessageId:guid}"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @attribute [Authorize]
-
 @using System.Security.Claims
 @using Efrsb.Application.Abstractions
 @using Efrsb.Contracts.Messages
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Authorization
-@using Microsoft.AspNetCore.Components.Web
-
 @inject ICompanyTrackingService CompanyService
 @inject AuthenticationStateProvider AuthState
 
-<h1>Сообщение</h1>
+<div class="message-details-page">
+    <a class="back-link" href="/companies">← К компаниям</a>
 
-@if (!string.IsNullOrWhiteSpace(error))
-{
-    <p style="color:red">@error</p>
-}
-else if (message is null)
-{
-    <p>Загрузка...</p>
-}
-else
-{
-    <p><b>Номер:</b> @message.Number</p>
-    <p><b>Дата:</b> @message.DatePublish.ToLocalTime()</p>
-    <p><b>Тип:</b> @message.Type</p>
-    <p><b>Статус:</b> @(message.IsRead ? "прочитано" : "новое")</p>
+    <h1>Сообщение</h1>
 
-    <h3>XML / содержимое</h3>
-    <MessageXmlViewer XmlContent="@message.ContentXml" />
-
-    <h3>Файлы</h3>
-
-    @if (message.Files.Count == 0)
+    @if (!string.IsNullOrWhiteSpace(error))
     {
-        <p>Файлов нет.</p>
+        <section class="panel alert-error">@error</section>
+    }
+    else if (message is null)
+    {
+        <section class="panel muted">Загрузка...</section>
     }
     else
     {
-        <table>
-            <thead>
-                <tr>
-                    <th>Файл</th>
-                    <th>Размер</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var f in message.Files)
-                {
-                    <tr>
-                        <td>@f.FileName</td>
-                        <td>@f.SizeBytes</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
-}
+        <section class="panel message-summary">
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <span>Номер</span>
+                    <strong>@message.Number</strong>
+                </div>
+                <div class="summary-item">
+                    <span>Дата</span>
+                    <strong>@message.DatePublish.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</strong>
+                </div>
+                <div class="summary-item summary-wide">
+                    <span>Тип</span>
+                    <strong>@GetTypeTitle(message)</strong>
+                </div>
+                <div class="summary-item">
+                    <span>Статус</span>
+                    <strong>@(message.IsRead ? "Прочитано" : "Новое")</strong>
+                </div>
+            </div>
+        </section>
 
-<p>
-    <a href="/companies">Назад к компаниям</a>
-</p>
+        <section class="panel">
+            <h2>XML / содержимое</h2>
+            @if (string.IsNullOrWhiteSpace(message.ContentXml))
+            {
+                <p class="muted">Содержимое не загружено.</p>
+            }
+            else
+            {
+                <MessageXmlViewer XmlContent="@message.ContentXml" />
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Файлы</h2>
+            @if (message.Files.Count == 0)
+            {
+                <p class="muted">Файлов нет.</p>
+            }
+            else
+            {
+                <div class="files-list">
+                    @foreach (var file in message.Files)
+                    {
+                        <div class="file-row">
+                            <span>@file.FileName</span>
+                            <span class="muted">@FormatBytes(file.SizeBytes)</span>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+    }
+</div>
 
 @code {
     [Parameter]
@@ -76,7 +91,6 @@ else
         try
         {
             var userId = await GetUserId();
-
             message = await CompanyService.GetMessageDetailsAsync(
                 userId,
                 MessageId,
@@ -103,10 +117,116 @@ else
     {
         var auth = await AuthState.GetAuthenticationStateAsync();
         var value = auth.User.FindFirstValue(ClaimTypes.NameIdentifier);
-
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException("Пользователь не авторизован.");
 
         return Guid.Parse(value);
     }
+
+    private static string GetTypeTitle(EfrsbMessageDetailsDto item)
+    {
+        if (item.Type.StartsWith("Public:", StringComparison.OrdinalIgnoreCase))
+            return !string.IsNullOrWhiteSpace(item.CourtDecisionType)
+                ? item.CourtDecisionType
+                : item.Type["Public:".Length..];
+
+        if (item.Type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase))
+            return !string.IsNullOrWhiteSpace(item.CourtDecisionType)
+                ? $"{item.Type["Report:".Length..]}. {item.CourtDecisionType}"
+                : item.Type["Report:".Length..];
+
+        return !string.IsNullOrWhiteSpace(item.CourtDecisionType)
+            ? item.CourtDecisionType
+            : item.Type;
+    }
+
+    private static string FormatBytes(long value)
+    {
+        if (value < 1024)
+            return $"{value} Б";
+
+        if (value < 1024 * 1024)
+            return $"{value / 1024d:0.##} КБ";
+
+        return $"{value / 1024d / 1024d:0.##} МБ";
+    }
 }
+
+<style>
+    .message-details-page {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .back-link {
+        color: #a78bfa;
+        text-decoration: none;
+    }
+
+    .message-details-page h1,
+    .message-details-page h2 {
+        margin: 0;
+    }
+
+    .panel {
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #0f172a;
+        padding: 18px;
+    }
+
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+    }
+
+    .summary-item {
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .summary-item span,
+    .muted {
+        color: #94a3b8;
+    }
+
+    .summary-item strong {
+        color: #f8fafc;
+    }
+
+    .summary-wide {
+        grid-column: span 2;
+    }
+
+    .files-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .file-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        border-top: 1px solid #1f2937;
+        padding-top: 8px;
+    }
+
+    .alert-error {
+        color: #fecaca;
+        border-color: #7f1d1d;
+        background: #450a0a;
+    }
+
+    @media (max-width: 720px) {
+        .summary-wide {
+            grid-column: auto;
+        }
+    }
+</style>

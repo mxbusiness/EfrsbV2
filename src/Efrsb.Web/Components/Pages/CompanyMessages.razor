@@ -174,6 +174,11 @@ else if (company is not null)
 
     private static string GetTypeTitle(string type, string? detail = null)
     {
+        if (IsPublicType(type))
+            return !string.IsNullOrWhiteSpace(detail)
+                ? detail
+                : type["Public:".Length..];
+
         if (IsReportType(type))
         {
             var reportType = type.StartsWith("Report:", StringComparison.OrdinalIgnoreCase)
@@ -285,6 +290,11 @@ else if (company is not null)
     private static bool IsReportType(string type)
     {
         return type.StartsWith("Report", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPublicType(string type)
+    {
+        return type.StartsWith("Public:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string DisplayCompanyName(TrackedCompanyDto company)

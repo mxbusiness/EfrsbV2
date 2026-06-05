@@ -255,6 +255,84 @@ public sealed class FedresursClient : IFedresursClient
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
+
+    public async Task<FedresursPublicCompanyItem?> FindPublicCompanyAsync(
+        string? inn,
+        string? ogrn,
+        string? name,
+        CancellationToken cancellationToken = default)
+    {
+        var probes = new[] { inn, ogrn, name }
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var probe in probes)
+        {
+            var url = "https://fedresurs.ru/backend/companies?limit=15&offset=0&code=" + Uri.EscapeDataString(probe);
+            var page = await GetPublicJsonAsync<FedresursPublicCompanyResponse>(
+                url,
+                "https://fedresurs.ru/search/entity?code=" + Uri.EscapeDataString(probe),
+                cancellationToken) ?? new FedresursPublicCompanyResponse();
+
+            var exact = page.PageData.FirstOrDefault(x =>
+                (!string.IsNullOrWhiteSpace(inn) && string.Equals(x.Inn, inn, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(ogrn) && string.Equals(x.Ogrn, ogrn, StringComparison.OrdinalIgnoreCase)));
+
+            if (exact is not null && !string.IsNullOrWhiteSpace(exact.Guid))
+                return exact;
+
+            var first = page.PageData.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Guid));
+            if (first is not null)
+                return first;
+        }
+
+        return null;
+    }
+
+    public async Task<FedresursPublicPublicationResponse> GetPublicCompanyPublicationsAsync(
+        string publicCompanyGuid,
+        DateTime? dateFrom = null,
+        DateTime? dateTo = null,
+        int limit = 500,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(publicCompanyGuid))
+            return new FedresursPublicPublicationResponse();
+
+        limit = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(0, offset);
+
+        var parts = new List<string>
+        {
+            $"limit={limit}",
+            $"offset={offset}",
+            "searchCompanyEfrsb=true",
+            "searchAmReport=true",
+            "searchFirmBankruptMessage=true",
+            "searchFirmBankruptMessageWithoutLegalCase=false",
+            "searchSfactsMessage=true",
+            "searchSroAmMessage=true",
+            "searchTradeOrgMessage=true"
+        };
+
+        if (dateFrom.HasValue && dateTo.HasValue)
+        {
+            parts.Add("startDate=" + Uri.EscapeDataString(NormalizePublicDate(dateFrom.Value, false)));
+            parts.Add("endDate=" + Uri.EscapeDataString(NormalizePublicDate(dateTo.Value, true)));
+        }
+
+        var url = $"https://fedresurs.ru/backend/companies/{Uri.EscapeDataString(publicCompanyGuid)}/publications?" + string.Join('&', parts);
+        var referer = $"https://fedresurs.ru/companies/{Uri.EscapeDataString(publicCompanyGuid)}/publications";
+
+        return await GetPublicJsonAsync<FedresursPublicPublicationResponse>(
+            url,
+            referer,
+            cancellationToken) ?? new FedresursPublicPublicationResponse();
+    }
+
     private async Task EnsureAuthorizedAsync(CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(_jwt) && DateTime.UtcNow < _jwtExpiresAtUtc)
@@ -277,6 +355,53 @@ public sealed class FedresursClient : IFedresursClient
         _jwt = auth.Jwt;
         _jwtExpiresAtUtc = DateTime.UtcNow.AddHours(7).AddMinutes(45);
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _jwt);
+    }
+
+
+    private async Task<T?> GetPublicJsonAsync<T>(
+        string url,
+        string referer,
+        CancellationToken cancellationToken)
+    {
+        var previousAuthorization = _httpClient.DefaultRequestHeaders.Authorization;
+        _httpClient.DefaultRequestHeaders.Authorization = null;
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Referrer = new Uri(referer);
+            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36");
+            request.Headers.AcceptLanguage.ParseAdd("ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7");
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return default;
+
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
+        }
+        finally
+        {
+            _httpClient.DefaultRequestHeaders.Authorization = previousAuthorization;
+        }
+    }
+
+    private static string NormalizePublicDate(DateTime value, bool endOfDay)
+    {
+        var utc = value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+
+        if (endOfDay)
+            utc = utc.Date.AddDays(1).AddMilliseconds(-1);
+        else
+            utc = utc.Date;
+
+        return utc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
     }
 
     private async Task<T?> GetJsonAsync<T>(
