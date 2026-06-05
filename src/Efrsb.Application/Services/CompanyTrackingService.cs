@@ -14,7 +14,7 @@ public interface IEfrsbDbContext
     DbSet<EfrsbMessageFile> EfrsbMessageFiles { get; }
     DbSet<UserMessageState> UserMessageStates { get; }
     DbSet<FedresursSyncLog> FedresursSyncLogs { get; }
-    Task SaveChangesAsync(CancellationToken cancellationToken = default);
+    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class CompanyTrackingService : ICompanyTrackingService
